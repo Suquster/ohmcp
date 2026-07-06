@@ -1,0 +1,122 @@
+[
+  {
+    "scenario": "latency-echo",
+    "stack": "baseline",
+    "ops": 5000,
+    "elapsed_ms": 130.539173,
+    "ops_per_sec": 38302.67869093976,
+    "p50_us": 24.0,
+    "p99_us": 29.0,
+    "bytes_on_wire": 1000869
+  },
+  {
+    "scenario": "latency-echo",
+    "stack": "ohmcp",
+    "ops": 5000,
+    "elapsed_ms": 79.22712399999999,
+    "ops_per_sec": 63109.699652861316,
+    "p50_us": 17.0,
+    "p99_us": 25.0,
+    "bytes_on_wire": 963272
+  },
+  {
+    "scenario": "latency-echo",
+    "stack": "ohmcp-plain",
+    "ops": 5000,
+    "elapsed_ms": 83.659139,
+    "ops_per_sec": 59766.3334785217,
+    "p50_us": 16.0,
+    "p99_us": 21.0,
+    "bytes_on_wire": 683027
+  },
+  {
+    "scenario": "bulk-kb-search",
+    "stack": "baseline",
+    "ops": 5000,
+    "elapsed_ms": 164.236295,
+    "ops_per_sec": 30443.940543105895,
+    "p50_us": 30.0,
+    "p99_us": 39.0,
+    "bytes_on_wire": 16035879
+  },
+  {
+    "scenario": "bulk-kb-search",
+    "stack": "ohmcp",
+    "ops": 5000,
+    "elapsed_ms": 164.768935,
+    "ops_per_sec": 30345.525993719628,
+    "p50_us": 32.0,
+    "p99_us": 39.0,
+    "bytes_on_wire": 3051392
+  },
+  {
+    "scenario": "bulk-kb-search",
+    "stack": "ohmcp-plain",
+    "ops": 5000,
+    "elapsed_ms": 131.018461,
+    "ops_per_sec": 38162.5609233801,
+    "p50_us": 27.0,
+    "p99_us": 35.0,
+    "bytes_on_wire": 2771147
+  },
+  {
+    "scenario": "repeat-cached",
+    "stack": "baseline",
+    "ops": 5000,
+    "elapsed_ms": 168.328537,
+    "ops_per_sec": 29703.81664993619,
+    "p50_us": 32.0,
+    "p99_us": 42.0,
+    "bytes_on_wire": 15718089
+  },
+  {
+    "scenario": "repeat-cached",
+    "stack": "ohmcp",
+    "ops": 5000,
+    "elapsed_ms": 115.414787,
+    "ops_per_sec": 43322.00517772476,
+    "p50_us": 22.0,
+    "p99_us": 26.0,
+    "bytes_on_wire": 919662
+  },
+  {
+    "scenario": "pipeline-64",
+    "stack": "baseline",
+    "ops": 5120,
+    "elapsed_ms": 40.767916,
+    "ops_per_sec": 125588.9557857213,
+    "p50_us": 473.0,
+    "p99_us": 823.0,
+    "bytes_on_wire": 0
+  },
+  {
+    "scenario": "pipeline-64",
+    "stack": "ohmcp",
+    "ops": 5120,
+    "elapsed_ms": 23.443615,
+    "ops_per_sec": 218396.35226905064,
+    "p50_us": 272.0,
+    "p99_us": 309.0,
+    "bytes_on_wire": 0
+  },
+  {
+    "scenario": "concurrent-16",
+    "stack": "baseline",
+    "ops": 8000,
+    "elapsed_ms": 88.45550300000001,
+    "ops_per_sec": 90440.95311967193,
+    "p50_us": 174.0,
+    "p99_us": 291.0,
+    "bytes_on_wire": 0
+  },
+  {
+    "scenario": "concurrent-16",
+    "stack": "ohmcp",
+    "ops": 8000,
+    "elapsed_ms": 91.18006100000001,
+    "ops_per_sec": 87738.48045572155,
+    "p50_us": 173.0,
+    "p99_us": 298.0,
+    "bytes_on_wire": 0
+  }
+]

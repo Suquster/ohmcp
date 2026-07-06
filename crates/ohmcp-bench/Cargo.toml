@@ -1,0 +1,16 @@
+[package]
+name = "ohmcp-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ohmcp-core = { path = "../ohmcp-core" }
+ohmcp-client = { path = "../ohmcp-client" }
+ohmcpd = { path = "../ohmcpd" }
+tokio.workspace = true
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+hdrhistogram.workspace = true
