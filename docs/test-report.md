@@ -17,13 +17,13 @@
 | 传输 | 同机 Unix Domain Socket |
 | 基线 | JSON-RPC 2.0 换行分隔文本（对齐官方 Python/TS SDK 传输语义），按 id 分发响应，工具执行逻辑与 ohmcpd 完全一致（复用同一 ToolRegistry） |
 
-## 3. 单元测试（`cargo test --workspace`，23 项全部通过）
+## 3. 单元测试（`cargo test --workspace`，30 项全部通过）
 
 | 模块 | 用例 |
 |---|---|
-| ohmcp-core | 帧编解码往返、半包增量解码、非法 magic 拒绝、消息类型映射、RPC 结构序列化（5） |
+| ohmcp-core | 帧编解码往返、半包增量解码、非法 magic/版本/消息类型拒绝、超限帧拒绝、随机字节流不 panic、消息类型映射、RPC 结构序列化（9） |
 | ohmcp-cache | 小 payload 不压缩、大 payload 压缩往返、缓存命中/未命中、TTL 过期、LRU 淘汰（5） |
-| ohmcp-security | HMAC 验证/拒绝、会话密钥派生一致性、加解密往返、错误密钥拒绝、AAD 篡改拒绝、ACL 授权/拒绝（9） |
+| ohmcp-security | HMAC 验证/拒绝、会话密钥派生一致性、加解密往返、错误密钥/篡改/截断密文拒绝、AAD 篡改拒绝、nonce 唯一性、会话前缀随机化、ACL 授权/拒绝（12） |
 | ohmcp-client | 管线明文/压缩往返、加密往返、篡改 request_id 解密失败（3） |
 | ohmcp-transport | 双工 100 帧批量写读往返（1） |
 

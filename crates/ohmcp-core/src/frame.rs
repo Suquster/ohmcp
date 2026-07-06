@@ -195,4 +195,52 @@ mod tests {
         let mut buf = BytesMut::from(&[0u8; HEADER_LEN][..]);
         assert!(matches!(Frame::decode(&mut buf), Err(CoreError::BadMagic)));
     }
+
+    #[test]
+    fn version_mismatch_rejected() {
+        let f = Frame::new(MsgType::Ping, 1, Bytes::new());
+        let mut buf = BytesMut::new();
+        f.encode(&mut buf);
+        buf[2] = PROTOCOL_VERSION + 1;
+        assert!(matches!(
+            Frame::decode(&mut buf),
+            Err(CoreError::BadVersion(_))
+        ));
+    }
+
+    #[test]
+    fn oversized_frame_rejected() {
+        let f = Frame::new(MsgType::Ping, 1, Bytes::new());
+        let mut buf = BytesMut::new();
+        f.encode(&mut buf);
+        buf[13..17].copy_from_slice(&(MAX_FRAME_LEN + 1).to_le_bytes());
+        assert!(matches!(
+            Frame::decode(&mut buf),
+            Err(CoreError::FrameTooLarge(_))
+        ));
+    }
+
+    #[test]
+    fn unknown_msg_type_rejected() {
+        let f = Frame::new(MsgType::Ping, 1, Bytes::new());
+        let mut buf = BytesMut::new();
+        f.encode(&mut buf);
+        buf[4] = 0x66;
+        assert!(matches!(Frame::decode(&mut buf), Err(CoreError::Codec(_))));
+    }
+
+    #[test]
+    fn fuzz_random_bytes_never_panic() {
+        // 任意字节流喂入解码器不得 panic，只能返回 Ok(None)/Err。
+        let mut seed = 0x9e3779b97f4a7c15u64;
+        for len in 0..256usize {
+            let mut data = Vec::with_capacity(len);
+            for _ in 0..len {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                data.push((seed >> 33) as u8);
+            }
+            let mut buf = BytesMut::from(&data[..]);
+            let _ = Frame::decode(&mut buf);
+        }
+    }
 }

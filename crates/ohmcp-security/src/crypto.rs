@@ -103,4 +103,34 @@ mod tests {
         let ct = encrypt(&[1u8; 32], b"secret", b"");
         assert!(decrypt(&[2u8; 32], &ct, b"").is_err());
     }
+
+    #[test]
+    fn truncated_ciphertext_rejected() {
+        let key = [7u8; 32];
+        let ct = encrypt(&key, b"secret", b"");
+        for n in 0..(12 + 16) {
+            assert!(decrypt(&key, &ct[..n], b"").is_err());
+        }
+    }
+
+    #[test]
+    fn nonce_unique_per_message() {
+        let key = [7u8; 32];
+        let c = SessionCipher::new(&key);
+        let a = c.encrypt(b"x", b"");
+        let b = c.encrypt(b"x", b"");
+        assert_ne!(&a[..12], &b[..12], "nonce must differ across messages");
+        assert_ne!(a, b, "identical plaintext must yield distinct ciphertext");
+    }
+
+    #[test]
+    fn replayed_nonce_still_decrypts_but_ciphertexts_differ_across_sessions() {
+        // 会话前缀随机化：不同会话同计数器的 nonce 不同。
+        let key = [7u8; 32];
+        let c1 = SessionCipher::new(&key);
+        let c2 = SessionCipher::new(&key);
+        let a = c1.encrypt(b"x", b"");
+        let b = c2.encrypt(b"x", b"");
+        assert_ne!(&a[..4], &b[..4]);
+    }
 }

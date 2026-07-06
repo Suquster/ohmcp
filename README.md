@@ -63,7 +63,7 @@ let result = c.call_tool("kb.search", serde_json::json!({"query": "鸿蒙", "top
 ## 测试
 
 ```bash
-cargo test --workspace                     # 23 个单元测试（帧编解码/压缩/加解密/缓存/管线/传输）
+cargo test --workspace                     # 30 个单元测试（帧编解码/对抗性解码/压缩/加解密/缓存/管线/传输）
 cargo clippy --workspace --all-targets -- -D warnings   # 零警告（CI 强制）
 ```
 
