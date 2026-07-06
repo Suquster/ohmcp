@@ -6,7 +6,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bytes::Bytes;
-use chacha20poly1305::aead::{Aead, Payload};
+use chacha20poly1305::aead::{Aead, AeadInPlace, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, Nonce};
 use rand::RngCore;
 
@@ -36,21 +36,16 @@ impl SessionCipher {
         nonce_bytes[..4].copy_from_slice(&self.nonce_prefix);
         let ctr = self.nonce_counter.fetch_add(1, Ordering::Relaxed);
         nonce_bytes[4..].copy_from_slice(&ctr.to_le_bytes());
-        let nonce = Nonce::from_slice(&nonce_bytes);
-        let ct = self
+        // 原地加密：单次分配、单次拷贝（nonce || ciphertext || tag）。
+        let mut buf = Vec::with_capacity(12 + plaintext.len() + 16);
+        buf.extend_from_slice(&nonce_bytes);
+        buf.extend_from_slice(plaintext);
+        let tag = self
             .cipher
-            .encrypt(
-                nonce,
-                Payload {
-                    msg: plaintext,
-                    aad,
-                },
-            )
+            .encrypt_in_place_detached(Nonce::from_slice(&nonce_bytes), aad, &mut buf[12..])
             .expect("encryption is infallible for valid key");
-        let mut out = Vec::with_capacity(12 + ct.len());
-        out.extend_from_slice(&nonce_bytes);
-        out.extend_from_slice(&ct);
-        Bytes::from(out)
+        buf.extend_from_slice(&tag);
+        Bytes::from(buf)
     }
 
     pub fn decrypt(&self, data: &[u8], aad: &[u8]) -> Result<Bytes, SecurityError> {
@@ -59,10 +54,7 @@ impl SessionCipher {
         }
         let (nonce_bytes, ct) = data.split_at(12);
         self.cipher
-            .decrypt(
-                Nonce::from_slice(nonce_bytes),
-                Payload { msg: ct, aad },
-            )
+            .decrypt(Nonce::from_slice(nonce_bytes), Payload { msg: ct, aad })
             .map(Bytes::from)
             .map_err(|_| SecurityError::DecryptFailed)
     }
