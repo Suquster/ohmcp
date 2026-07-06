@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ohmcp-core",
+    "crates/ohmcp-cache",
+    "crates/ohmcp-security",
+    "crates/ohmcp-transport",
+    "crates/ohmcp-client",
+    "crates/ohmcpd",
+    "crates/ohmcp-bench",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://www.gitlink.org.cn/Taoyouce/ohmcp"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+bytes = "1"
+lz4_flex = "0.11"
+chacha20poly1305 = "0.10"
+hmac = "0.12"
+sha2 = "0.10"
+rand = "0.8"
+thiserror = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+hdrhistogram = "7"

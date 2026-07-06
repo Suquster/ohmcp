@@ -1,0 +1,3 @@
+[build]
+# AEAD/哈希热路径显著受益于本机 SIMD 指令（ChaCha20 AVX2/NEON）。
+rustflags = ["-C", "target-cpu=native"]
