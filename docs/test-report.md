@@ -38,6 +38,7 @@ p50/p99 时延（HDRHistogram，µs）、线上字节。
 | latency-echo | 5000 次小消息 echo，顺序 | 帧解析/信封开销、端到端时延 |
 | bulk-kb-search | 5000 次不同 query 的 kb.search（~3KB 结果） | 压缩、批量数据通路 |
 | repeat-cached | 5000 次调用轮转 10 个热点 query | 内容寻址缓存 + CACHE_REF |
+| bulk-doc-64k | 500 次整文档拉取（~64KB 结果） | 大 payload 压缩、字节效率 |
 | pipeline-64 | 单连接 64 并发 worker × 80 次 | 多路复用、队头阻塞 |
 | concurrent-16 | 16 个 Agent 连接 × 500 次 | 多连接并发扩展性 |
 
@@ -47,18 +48,20 @@ p50/p99 时延（HDRHistogram，µs）、线上字节。
 
 | 场景 | 栈 | ops/s | p50(µs) | p99(µs) | 线上字节 |
 |---|---|---|---|---|---|
-| latency-echo | baseline | 40 692 | 24 | 28 | 1 000 869 |
-| latency-echo | **ohmcp** | **53 578** | **17** | **24** | 963 272 |
-| latency-echo | ohmcp（不加密） | 63 510 | 15 | 18 | 683 027 |
-| bulk-kb-search | baseline | 31 568 | 30 | 35 | 16 035 879 |
-| bulk-kb-search | **ohmcp** | 29 217 | 31 | 40 | **3 051 392** |
-| bulk-kb-search | ohmcp（不加密） | 34 271 | 28 | 36 | 2 771 147 |
-| repeat-cached | baseline | 32 487 | 30 | 35 | 15 718 089 |
-| repeat-cached | **ohmcp** | **40 714** | **23** | **28** | **919 662** |
-| pipeline-64 | baseline | 127 812 | 478 | 776 | — |
-| pipeline-64 | **ohmcp** | **231 119** | **274** | **293** | — |
-| concurrent-16 | baseline | 92 144 | 173 | 262 | — |
-| concurrent-16 | **ohmcp** | 82 700 | 187 | 296 | — |
+| latency-echo | baseline | 38 496 | 24 | 33 | 1 000 869 |
+| latency-echo | **ohmcp** | **56 702** | **16** | **20** | 963 272 |
+| latency-echo | ohmcp（不加密） | 61 273 | 15 | 19 | 683 027 |
+| bulk-kb-search | baseline | 31 813 | 31 | 34 | 16 035 879 |
+| bulk-kb-search | **ohmcp** | 29 121 | 32 | 41 | **3 051 392** |
+| bulk-kb-search | ohmcp（不加密） | 34 463 | 28 | 35 | 2 771 147 |
+| bulk-doc-64k | baseline | 7 747 | 124 | 170 | 33 099 435 |
+| bulk-doc-64k | **ohmcp** | 5 881 | 170 | 193 | **1 470 960** |
+| repeat-cached | baseline | 26 818 | 31 | 63 | 15 718 089 |
+| repeat-cached | **ohmcp** | **42 354** | **23** | **32** | **919 662** |
+| pipeline-64 | baseline | 141 597 | 426 | 746 | — |
+| pipeline-64 | **ohmcp** | **216 104** | **276** | **502** | — |
+| concurrent-16 | baseline | 92 901 | 171 | 261 | — |
+| concurrent-16 | **ohmcp** | **109 097** | **137** | **248** | — |
 
 三轮重复运行的提升区间（ohmcp 加密 vs 基线）：
 
@@ -67,7 +70,8 @@ p50/p99 时延（HDRHistogram，µs）、线上字节。
 | latency-echo | **+30% ~ +65%** | −17% ~ −36% | −3.8% |
 | bulk-kb-search | −7% ~ +4%（不加密 +9% ~ +25%） | −7% ~ +7% | **−81.0%** |
 | repeat-cached | **+24% ~ +59%** | −23% ~ −36% | **−94.1%** |
-| pipeline-64 | **+62% ~ +84%** | −40% ~ −46% | — |
+| bulk-doc-64k | −24%（同机 loopback；受限链路下字节数主导） | — | **−95.6%** |
+| pipeline-64 | **+53% ~ +84%** | −35% ~ −46% | — |
 | concurrent-16 | −10% ~ +25% | −8% ~ −22% | — |
 
 ### 结论
@@ -77,6 +81,9 @@ p50/p99 时延（HDRHistogram，µs）、线上字节。
   p99 尾延迟 776µs → 293µs）；
 - **安全代价可量化**：全程 AEAD 加密下仍取得上述成绩；bulk 场景加密开销
   （每次 ~3KB 双向 AEAD）约抵消协议增益，为可按需关闭的合理折中；
+- **大 payload 场景**：64KB 文档同机 loopback 下压缩 CPU 成本使吞吐 −24%，
+  但线上字节 −95.6%——在软总线 / BLE / 低功耗蜂窝等带宽与能耗受限链路上，
+  字节数直接决定时延与功耗，该折中面向端侧场景正向；
 - 复现：`cargo run --release -p ohmcp-bench -- --json bench-results.json`。
 
 ### 端到端场景演示

@@ -119,6 +119,19 @@ payload ≥ 512B 时尝试 LZ4（`compress_prepend_size`），仅在确有收益
 6. LZ4 透明压缩（大结果 −81% 字节）；
 7. `target-cpu=native`：ChaCha20 SIMD 路径提速约 4 倍。
 
+## 7.1 跨设备扩展：分布式软总线集成（设计）
+
+OHMF 帧格式与传输层解耦，天然可承载于 OpenHarmony 分布式软总线（DSoftBus）：
+
+- **会话映射**：`ohmcp-transport` 抽象为 `AsyncRead + AsyncWrite`，DSoftBus
+  `Session` 字节流可直接替换 UDS，帧协议、加密、缓存层零改动复用；
+- **设备发现**：ohmcpd 经软总线发布 `ohmcp.daemon` 能力，远端 Agent 发现后
+  建立会话，形成"跨设备工具调用"——手表 Agent 调用手机侧知识库工具；
+- **字节效率即能耗**：软总线底层为 BLE/P2P/WLAN，带宽与功耗受限，
+  本协议 −81% ~ −95.6% 的线上字节直接转化为传输能耗与时延优势；
+- **安全对齐**：软总线设备认证之上叠加本协议的 Agent 级 HMAC 认证与
+  工具级 ACL，实现设备-Agent-工具三级最小权限。
+
 ## 8. 与 OpenHarmony 的结合
 
 ohmcpd 作为用户态系统服务运行于 UDS（`/tmp/ohmcpd.sock`，产品化可迁移至
