@@ -95,6 +95,8 @@ CI（GitHub Actions）：fmt + clippy(-D warnings) + 全量测试 + 基准烟雾
 - [特性设计文档](docs/design.md)
 - [测试方案与测试报告](docs/test-report.md)
 - [作品亮点（答辩提纲）](docs/pitch.md)
+- [答辩幻灯片（Marp）](docs/slides.md)
+- [演示视频分镜脚本](docs/demo-script.md)
 
 ## 许可证
 
