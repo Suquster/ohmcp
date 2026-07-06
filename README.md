@@ -24,16 +24,17 @@
 
 | 场景 | 吞吐提升 | p50 延迟 | 线上字节 |
 |---|---|---|---|
-| latency-echo（5k 小消息） | +10% ~ +65% | −20% ~ −36% | −3.8% |
-| bulk-kb-search（5k 大结果） | ≈持平（不加密 +13%~+25%） | ≈持平 | **−81.0%** |
-| repeat-cached（热点重复调用） | **+24% ~ +59%** | −26% ~ −36% | **−94.1%** |
-| pipeline-64（单连接 64 路复用） | **+58% ~ +76%** | −34% ~ −43% | — |
-| concurrent-16（16 Agent） | 0% ~ +25% | 0% ~ −22% | — |
+| latency-echo（5k 小消息） | **+30% ~ +65%** | −17% ~ −36% | −3.8% |
+| bulk-kb-search（5k 大结果） | ≈持平（不加密 +9%~+25%） | ≈持平 | **−81.0%** |
+| repeat-cached（热点重复调用） | **+24% ~ +59%** | −23% ~ −36% | **−94.1%** |
+| pipeline-64（单连接 64 路复用） | **+62% ~ +84%** | −40% ~ −46% | — |
+| concurrent-16（16 Agent） | −10% ~ +25% | −8% ~ −22% | — |
 
 复现：
 
 ```bash
 cargo run --release -p ohmcp-bench -- --json bench-results.json
+cargo run --release -p ohmcp-bench --bin demo   # 端到端多 Agent 演示
 ```
 
 ## 快速开始
@@ -59,8 +60,11 @@ let result = c.call_tool("kb.search", serde_json::json!({"query": "鸿蒙", "top
 ## 测试
 
 ```bash
-cargo test --workspace     # 23 个单元测试（帧编解码/压缩/加解密/缓存/管线/传输）
+cargo test --workspace                     # 23 个单元测试（帧编解码/压缩/加解密/缓存/管线/传输）
+cargo clippy --workspace --all-targets -- -D warnings   # 零警告（CI 强制）
 ```
+
+CI（GitHub Actions）：fmt + clippy(-D warnings) + 全量测试 + 基准烟雾。
 
 ## 文档
 
