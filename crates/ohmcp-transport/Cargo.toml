@@ -9,3 +9,4 @@ ohmcp-core = { path = "../ohmcp-core" }
 tokio.workspace = true
 bytes.workspace = true
 thiserror.workspace = true
+libc.workspace = true

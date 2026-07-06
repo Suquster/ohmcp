@@ -96,6 +96,27 @@ async fn bench_ohmcp_plain(
     bench_ohmcp_inner(scenario, "ohmcp-plain", OHMCP_PLAIN_SOCK, None, n, f).await
 }
 
+/// 共享内存大 payload 通道（memfd + SCM_RIGHTS）：超阈值结果零套接字拷贝。
+async fn bench_ohmcp_shm(
+    scenario: &str,
+    n: usize,
+    f: impl Fn(usize) -> (String, Value),
+) -> Result<Metrics> {
+    let c = OhmcpClient::connect_shm(OHMCP_SOCK, "bench-agent", Some(TOKEN.as_bytes())).await?;
+    anyhow::ensure!(c.shm_enabled(), "shm negotiation failed");
+    let mut h = Histogram::<u64>::new(3)?;
+    let t0 = Instant::now();
+    for i in 0..n {
+        let (tool, args) = f(i);
+        let s = Instant::now();
+        c.call_tool(&tool, args).await?;
+        record(&mut h, s);
+    }
+    let elapsed = t0.elapsed().as_secs_f64() * 1000.0;
+    let bytes = c.wire_bytes().await;
+    Ok(metrics(scenario, "ohmcp-shm", &h, elapsed, bytes))
+}
+
 async fn bench_ohmcp_inner(
     scenario: &str,
     stack: &str,
@@ -318,6 +339,9 @@ async fn main() -> Result<()> {
         ("kb.dump".into(), json!({"doc_id": format!("d{i}")}))
     })));
     all.push(med3!(bench_ohmcp("bulk-doc-64k", M, |i| {
+        ("kb.dump".into(), json!({"doc_id": format!("d{i}")}))
+    })));
+    all.push(med3!(bench_ohmcp_shm("bulk-doc-64k", M, |i| {
         ("kb.dump".into(), json!({"doc_id": format!("d{i}")}))
     })));
 

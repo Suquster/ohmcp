@@ -35,6 +35,9 @@ impl FrameFlags {
     pub const CACHE_REF: u8 = 0b0000_0100;
     /// 结果可缓存（服务端提示，客户端据此收录本地缓存）。
     pub const CACHEABLE: u8 = 0b0000_1000;
+    /// payload 为共享内存环形缓冲区引用（offset u64 + len u32），
+    /// 实际数据位于通过 SCM_RIGHTS 传递的 memfd 中。
+    pub const SHM_REF: u8 = 0b0001_0000;
 
     pub fn compressed(self) -> bool {
         self.0 & Self::COMPRESSED != 0
@@ -47,6 +50,9 @@ impl FrameFlags {
     }
     pub fn cacheable(self) -> bool {
         self.0 & Self::CACHEABLE != 0
+    }
+    pub fn shm_ref(self) -> bool {
+        self.0 & Self::SHM_REF != 0
     }
 }
 
@@ -64,6 +70,8 @@ pub enum MsgType {
     Pong = 0x08,
     Auth = 0x09,
     AuthResult = 0x0A,
+    ShmSetup = 0x0B,
+    ShmSetupResult = 0x0C,
     Error = 0x7F,
 }
 
@@ -80,6 +88,8 @@ impl MsgType {
             0x08 => MsgType::Pong,
             0x09 => MsgType::Auth,
             0x0A => MsgType::AuthResult,
+            0x0B => MsgType::ShmSetup,
+            0x0C => MsgType::ShmSetupResult,
             0x7F => MsgType::Error,
             other => return Err(CoreError::Codec(format!("unknown msg type {other:#x}"))),
         })

@@ -1,6 +1,7 @@
 //! UDS 服务端：每连接一个异步任务，共享工具注册表与服务端结果缓存。
 
 use std::collections::HashSet;
+use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -8,11 +9,15 @@ use anyhow::Result;
 use bytes::Bytes;
 use ohmcp_cache::{CacheKey, ResultCache};
 use ohmcp_client::pipeline::PayloadPipeline;
+use ohmcp_core::FrameFlags;
 use ohmcp_core::{
     AuthParams, AuthResult, CallToolParams, ErrorBody, Frame, Implementation, InitializeResult,
     ListToolsResult, MsgType,
 };
 use ohmcp_security::{derive_session_key, verify_response, ToolAcl};
+use ohmcp_transport::shm::{
+    encode_shm_ref, send_fd_blocking, send_fd_decline, ShmRing, DEFAULT_SHM_CAP,
+};
 use ohmcp_transport::{FrameReader, FrameWriter};
 use serde_json::json;
 use tokio::net::{UnixListener, UnixStream};
@@ -57,7 +62,11 @@ pub async fn run(socket_path: &str, token: Option<Vec<u8>>, registry: ToolRegist
     }
 }
 
+/// 走共享内存通道的最小 payload（小于此值帧内传输更划算）。
+const SHM_THRESHOLD: usize = 16 * 1024;
+
 async fn handle_conn(stream: UnixStream, shared: Arc<Shared>) -> Result<()> {
+    let raw_fd = stream.as_raw_fd();
     let (rh, wh) = stream.into_split();
     let mut reader = FrameReader::new(rh);
     let writer = Arc::new(Mutex::new(FrameWriter::new(wh)));
@@ -66,6 +75,8 @@ async fn handle_conn(stream: UnixStream, shared: Arc<Shared>) -> Result<()> {
     let mut agent_id = String::from("anonymous");
     // 已向该客户端完整下发过的缓存键（可安全发送 CACHE_REF）。
     let mut delivered: HashSet<CacheKey> = HashSet::new();
+    // 会话级共享内存大 payload 通道（客户端显式协商后启用）。
+    let mut shm: Option<Arc<ShmRing>> = None;
 
     while let Some(frame) = reader
         .next_frame()
@@ -128,6 +139,42 @@ async fn handle_conn(stream: UnixStream, shared: Arc<Shared>) -> Result<()> {
                     .send(&f)
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
+            }
+            MsgType::ShmSetup => {
+                // 顺序：先经辅助数据传 fd（或拒绝字节），再发结果帧，
+                // 保证客户端帧读缓冲不会吞掉携带 SCM_RIGHTS 的字节。
+                let ring = ShmRing::create(DEFAULT_SHM_CAP).ok().map(Arc::new);
+                let ring_fd = ring.as_ref().map(|r| r.raw_fd());
+                let sock_dup = unsafe { libc::dup(raw_fd) };
+                if sock_dup < 0 {
+                    anyhow::bail!("dup failed during shm setup");
+                }
+                let sent = tokio::task::spawn_blocking(move || {
+                    let r = match ring_fd {
+                        Some(fd) => send_fd_blocking(sock_dup, fd),
+                        None => send_fd_decline(sock_dup),
+                    };
+                    unsafe { libc::close(sock_dup) };
+                    r
+                })
+                .await?;
+                let ok = sent.is_ok() && ring.is_some();
+                let result = json!({"ok": ok, "size": DEFAULT_SHM_CAP});
+                let (f, _) = pipeline.wrap(
+                    MsgType::ShmSetupResult,
+                    id,
+                    Bytes::from(serde_json::to_vec(&result)?),
+                );
+                writer
+                    .lock()
+                    .await
+                    .send(&f)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                if ok {
+                    shm = ring;
+                    info!(agent = %agent_id, cap = DEFAULT_SHM_CAP, "shm channel enabled");
+                }
             }
             MsgType::Initialize => {
                 let result = InitializeResult {
@@ -214,9 +261,8 @@ async fn handle_conn(stream: UnixStream, shared: Arc<Shared>) -> Result<()> {
                             pipeline.wrap_cache_ref(MsgType::CallToolResult, id, &key)
                         } else {
                             delivered.insert(key);
-                            let (mut f, _) =
-                                pipeline.wrap(MsgType::CallToolResult, id, result_bytes);
-                            f.header.flags.0 |= ohmcp_core::FrameFlags::CACHEABLE;
+                            let mut f = wrap_maybe_shm(&pipeline, &shm, id, result_bytes);
+                            f.header.flags.0 |= FrameFlags::CACHEABLE;
                             f
                         };
                         writer
@@ -236,9 +282,9 @@ async fn handle_conn(stream: UnixStream, shared: Arc<Shared>) -> Result<()> {
                             shared.cache.lock().unwrap().put(key, result_bytes.clone());
                             delivered.insert(key);
                         }
-                        let (mut f, _) = pipeline.wrap(MsgType::CallToolResult, id, result_bytes);
+                        let mut f = wrap_maybe_shm(&pipeline, &shm, id, result_bytes);
                         if cacheable {
-                            f.header.flags.0 |= ohmcp_core::FrameFlags::CACHEABLE;
+                            f.header.flags.0 |= FrameFlags::CACHEABLE;
                         }
                         writer
                             .lock()
@@ -273,6 +319,28 @@ async fn handle_conn(stream: UnixStream, shared: Arc<Shared>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// 大 payload 优先走共享内存通道（帧内仅 12 字节引用），
+/// 空间不足或未启用时回退到常规压缩 + 加密帧。
+fn wrap_maybe_shm(
+    pipeline: &PayloadPipeline,
+    shm: &Option<Arc<ShmRing>>,
+    id: u64,
+    payload: Bytes,
+) -> Frame {
+    if let Some(ring) = shm {
+        if payload.len() >= SHM_THRESHOLD {
+            if let Some(offset) = ring.try_write(&payload) {
+                let body = Bytes::copy_from_slice(&encode_shm_ref(offset, payload.len() as u32));
+                let mut f = Frame::new(MsgType::CallToolResult, id, body);
+                f.header.flags.0 |= FrameFlags::SHM_REF;
+                return f;
+            }
+        }
+    }
+    let (f, _) = pipeline.wrap(MsgType::CallToolResult, id, payload);
+    f
 }
 
 fn unhex(s: &str) -> Option<Vec<u8>> {

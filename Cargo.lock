@@ -402,6 +402,7 @@ name = "ohmcp-transport"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "libc",
  "ohmcp-core",
  "thiserror",
  "tokio",
@@ -413,6 +414,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "libc",
  "ohmcp-cache",
  "ohmcp-client",
  "ohmcp-core",

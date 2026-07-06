@@ -18,8 +18,10 @@ use ohmcp_core::{
     InitializeResult, ListToolsResult, MsgType,
 };
 use ohmcp_security::{derive_session_key, hmac_response};
+use ohmcp_transport::shm::{decode_shm_ref, recv_fd_blocking, ShmRing, MAX_SHM_CAP};
 use ohmcp_transport::{FrameReader, FrameWriter};
 use rand::RngCore;
+use std::os::fd::AsRawFd;
 use tokio::net::unix::OwnedWriteHalf;
 use tokio::net::UnixStream;
 use tokio::sync::{oneshot, Mutex};
@@ -37,6 +39,8 @@ pub struct OhmcpClient {
     pending: std::sync::Mutex<HashMap<u64, oneshot::Sender<Frame>>>,
     next_id: AtomicU64,
     pipeline: PayloadPipeline,
+    /// 共享内存大 payload 通道（connect_shm 协商成功后启用）。
+    shm: Option<ShmRing>,
 }
 
 impl OhmcpClient {
@@ -46,9 +50,29 @@ impl OhmcpClient {
         agent_id: &str,
         token: Option<&[u8]>,
     ) -> Result<Arc<OhmcpClient>> {
+        Self::connect_inner(socket_path, agent_id, token, false).await
+    }
+
+    /// 同 connect，但额外协商同设备共享内存大 payload 通道：
+    /// 服务端经 SCM_RIGHTS 下发 memfd，超阈值结果零套接字拷贝直达。
+    pub async fn connect_shm(
+        socket_path: &str,
+        agent_id: &str,
+        token: Option<&[u8]>,
+    ) -> Result<Arc<OhmcpClient>> {
+        Self::connect_inner(socket_path, agent_id, token, true).await
+    }
+
+    async fn connect_inner(
+        socket_path: &str,
+        agent_id: &str,
+        token: Option<&[u8]>,
+        use_shm: bool,
+    ) -> Result<Arc<OhmcpClient>> {
         let stream = UnixStream::connect(socket_path)
             .await
             .with_context(|| format!("connect {socket_path}"))?;
+        let raw_fd = stream.as_raw_fd();
         let (rh, wh) = stream.into_split();
         let mut reader = FrameReader::new(rh);
         let mut writer = FrameWriter::new(wh);
@@ -81,12 +105,39 @@ impl OhmcpClient {
             pipeline.enable_encryption(key);
         }
 
+        // 共享内存通道协商（严格顺序阶段，帧读缓冲此时为空，
+        // 先收 fd 载荷字节再读结果帧，避免 SCM_RIGHTS 被普通读丢弃）。
+        let mut shm = None;
+        if use_shm {
+            writer
+                .send(&Frame::new(MsgType::ShmSetup, 0, Bytes::new()))
+                .await
+                .map_err(|e| anyhow!("{e}"))?;
+            let fd = tokio::task::spawn_blocking(move || recv_fd_blocking(raw_fd)).await??;
+            let resp = reader
+                .next_frame()
+                .await
+                .map_err(|e| anyhow!("{e}"))?
+                .ok_or_else(|| anyhow!("connection closed during shm setup"))?;
+            let body = pipeline.unwrap(&resp).map_err(|e| anyhow!("{e}"))?;
+            let v: serde_json::Value = serde_json::from_slice(&body)?;
+            let ok = v.get("ok").and_then(serde_json::Value::as_bool) == Some(true);
+            let size = v
+                .get("size")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0) as usize;
+            if let (true, Some(fd)) = (ok && size > 0 && size <= MAX_SHM_CAP, fd) {
+                shm = Some(ShmRing::from_fd(fd, size)?);
+            }
+        }
+
         let client = Arc::new(OhmcpClient {
             writer: Mutex::new(writer),
             reader: Mutex::new(reader),
             pending: std::sync::Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
             pipeline,
+            shm,
         });
 
         // initialize 握手。
@@ -168,6 +219,11 @@ impl OhmcpClient {
         Ok(())
     }
 
+    /// 共享内存通道是否已启用。
+    pub fn shm_enabled(&self) -> bool {
+        self.shm.is_some()
+    }
+
     /// 客户端缓存统计（命中数, 未命中数）。
     pub fn cache_stats(&self) -> (u64, u64) {
         self.pipeline.cache_stats()
@@ -197,12 +253,15 @@ impl OhmcpClient {
                         Err(oneshot::error::TryRecvError::Empty) => {}
                     }
                     // 持锁内联读，直到读到自己的响应。
+                    // SHM 引用必须在此处（帧到达顺序 = 写入顺序）立即
+                    // 取出并释放，保证 SPSC 环 FIFO 消费语义。
                     loop {
                         let frame = guard
                             .next_frame()
                             .await
                             .map_err(|e| anyhow!("{e}"))?
                             .ok_or_else(|| anyhow!("connection closed"))?;
+                        let frame = self.resolve_shm(frame)?;
                         if frame.header.request_id == id {
                             self.pending.lock().unwrap().remove(&id);
                             return Ok(frame);
@@ -215,6 +274,28 @@ impl OhmcpClient {
                 }
             }
         }
+    }
+}
+
+impl OhmcpClient {
+    /// 将 SHM_REF 帧的 12 字节引用替换为环中实际数据并释放空间。
+    fn resolve_shm(&self, mut frame: Frame) -> Result<Frame> {
+        if !frame.header.flags.shm_ref() {
+            return Ok(frame);
+        }
+        let ring = self
+            .shm
+            .as_ref()
+            .ok_or_else(|| anyhow!("SHM_REF frame but shm channel not negotiated"))?;
+        let (offset, len) =
+            decode_shm_ref(&frame.payload).ok_or_else(|| anyhow!("bad shm ref payload"))?;
+        let data = ring
+            .read_release(offset, len as usize)
+            .ok_or_else(|| anyhow!("invalid shm ref (offset={offset}, len={len})"))?;
+        frame.payload = Bytes::from(data);
+        frame.header.payload_len = len;
+        frame.header.flags.0 &= !ohmcp_core::FrameFlags::SHM_REF;
+        Ok(frame)
     }
 }
 

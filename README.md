@@ -11,7 +11,7 @@
 | 层 | crate | 说明 |
 |---|---|---|
 | 帧格式 | `ohmcp-core` | OHMF 二进制帧：17 字节定长头（magic/版本/标志/类型/request_id/长度），替代 JSON-RPC 文本信封 |
-| 传输 | `ohmcp-transport` | Unix Domain Socket 帧化读写；写路径批量聚合减少 syscall，读路径增量零拷贝解码 |
+| 传输 | `ohmcp-transport` | Unix Domain Socket 帧化读写；写路径批量聚合减少 syscall，读路径增量零拷贝解码；可选共享内存大 payload 通道（memfd 环形缓冲 + SCM_RIGHTS fd 传递，零套接字拷贝） |
 | 上下文优化 | `ohmcp-cache` | LZ4 透明压缩（512B 阈值）；内容寻址结果缓存 `sha256(tool ‖ args)`，命中时仅回传 32 字节 CACHE_REF |
 | 安全 | `ohmcp-security` | HMAC-SHA256 挑战应答认证（令牌不过网）；会话级 ChaCha20-Poly1305 AEAD（帧头入 AAD 防篡改）；工具粒度 ACL |
 | 服务端 | `ohmcpd` | 用户态守护进程，每连接异步任务，共享工具注册表与服务端缓存 |
@@ -26,7 +26,8 @@
 |---|---|---|---|
 | latency-echo（5k 小消息） | **+20% ~ +65%** | −17% ~ −36% | −3.8% |
 | bulk-kb-search（5k 大结果） | **+15% ~ +20%** | −10% ~ −13% | **−81.0%** |
-| bulk-doc-64k（整文档拉取） | **+5% ~ +20%** | −13% ~ −21% | **−95.6%** |
+| bulk-doc-64k（整文档拉取） | **+5% ~ +24%** | −13% ~ −21% | **−95.6%** |
+| bulk-doc-64k（共享内存通道） | **+52%** | **−32%** | **−99.8%** |
 | repeat-cached（热点重复调用） | **+37% ~ +59%** | −26% ~ −36% | **−94.1%** |
 | pipeline-64（单连接 64 路复用） | **+66% ~ +84%** | −34% ~ −46% | — |
 | concurrent-16（16 Agent） | **+30% ~ +41%** | −23% ~ −33% | — |
@@ -80,7 +81,7 @@ let result = c.call_tool("kb.search", serde_json::json!({"query": "鸿蒙", "top
 ## 测试
 
 ```bash
-cargo test --workspace                     # 30 个单元测试（帧编解码/对抗性解码/压缩/加解密/缓存/管线/传输）
+cargo test --workspace                     # 36 个单元测试（帧编解码/对抗性解码/共享内存通道/压缩/加解密/缓存/管线/传输）
 cargo clippy --workspace --all-targets -- -D warnings   # 零警告（CI 强制）
 ```
 
