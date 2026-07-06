@@ -40,6 +40,23 @@ cargo run --release -p ohmcp-bench -- --json bench-results.json
 cargo run --release -p ohmcp-bench --bin demo   # 端到端多 Agent 演示
 ```
 
+## 端到端演示输出
+
+```text
+=== ohmcp 多 Agent 演示（认证 + 加密开启） ===
+
+[voice-assistant] 可用工具: ["echo", "kb.search", "kb.dump", "device.status", "math.sum"]
+[voice-assistant] kb.search 首次调用: 991 字节, 98µs
+[voice-assistant] kb.search 重复调用（线上仅 32 字节 CACHE_REF）: 47µs
+[voice-assistant] 本地缓存: 1 命中 / 0 未命中
+[system-scheduler] device.status: {"content":[{"type":"text","text":"{\"battery\":87,...}"}]}
+[calc-agent] math.sum: {"content":[{"type":"text","text":"100"}]}
+[calc-agent] 越界调用被拒: server error: {"code":-32601,"message":"unknown tool: fs.delete_all"}
+[rogue-agent] 错误令牌被拒: auth failed: Some("invalid token")
+
+=== 演示完成：多 Agent 复用单守护进程，全程加密，缓存生效 ===
+```
+
 ## 快速开始
 
 ```bash
