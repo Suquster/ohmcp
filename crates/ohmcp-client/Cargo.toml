@@ -1,0 +1,16 @@
+[package]
+name = "ohmcp-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ohmcp-core = { path = "../ohmcp-core" }
+ohmcp-cache = { path = "../ohmcp-cache" }
+ohmcp-security = { path = "../ohmcp-security" }
+ohmcp-transport = { path = "../ohmcp-transport" }
+tokio.workspace = true
+bytes.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+rand.workspace = true
