@@ -52,6 +52,7 @@ cargo run --release -p ohmcp-bench --bin demo   # 端到端多 Agent 演示
 [voice-assistant] 本地缓存: 1 命中 / 0 未命中
 [system-scheduler] device.status: {"content":[{"type":"text","text":"{\"battery\":87,...}"}]}
 [calc-agent] math.sum: {"content":[{"type":"text","text":"100"}]}
+[doc-agent] kb.dump 经共享内存通道: 65959 字节结果, 320µs（套接字仅 12 字节引用）
 [calc-agent] 越界调用被拒: server error: {"code":-32601,"message":"unknown tool: fs.delete_all"}
 [rogue-agent] 错误令牌被拒: auth failed: Some("invalid token")
 

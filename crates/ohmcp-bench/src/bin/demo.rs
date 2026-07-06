@@ -89,6 +89,19 @@ async fn main() -> Result<()> {
         .await?;
     println!("[calc-agent] math.sum: {}\n", serde_json::to_string(&sum)?);
 
+    // 共享内存大 payload 通道：64KB 整文档经 memfd 环直达，帧内仅 12 字节引用。
+    let d = OhmcpClient::connect_shm(SOCK, "doc-agent", Some(TOKEN)).await?;
+    assert!(d.shm_enabled());
+    let t2 = Instant::now();
+    let doc = d
+        .call_tool("kb.dump", json!({"doc_id": "handbook"}))
+        .await?;
+    println!(
+        "[doc-agent] kb.dump 经共享内存通道: {} 字节结果, {:?}（套接字仅 12 字节引用）\n",
+        serde_json::to_string(&doc)?.len(),
+        t2.elapsed()
+    );
+
     // 错误处理：调用不存在的工具。
     match c.call_tool("fs.delete_all", json!({})).await {
         Err(e) => println!("[calc-agent] 越界调用被拒: {e}"),
