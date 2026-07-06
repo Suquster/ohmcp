@@ -67,7 +67,8 @@ async fn handle(stream: UnixStream, registry: Arc<ToolRegistry>) -> Result<()> {
 /// （对齐官方 SDK 的并发请求能力）。统计线上字节数。
 pub struct BaselineClient {
     write: tokio::sync::Mutex<tokio::net::unix::OwnedWriteHalf>,
-    pending: Arc<std::sync::Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<Value>>>>,
+    pending:
+        Arc<std::sync::Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<Value>>>>,
     next_id: AtomicU64,
     pub bytes_sent: AtomicU64,
     pub bytes_recv: Arc<AtomicU64>,
@@ -77,8 +78,9 @@ impl BaselineClient {
     pub async fn connect(socket_path: &str) -> Result<BaselineClient> {
         let stream = UnixStream::connect(socket_path).await?;
         let (rh, wh) = stream.into_split();
-        let pending: Arc<std::sync::Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<Value>>>> =
-            Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+        let pending: Arc<
+            std::sync::Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<Value>>>,
+        > = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
         let bytes_recv = Arc::new(AtomicU64::new(0));
         {
             let pending = pending.clone();
@@ -87,7 +89,9 @@ impl BaselineClient {
                 let mut lines = BufReader::new(rh).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     bytes_recv.fetch_add(line.len() as u64 + 1, Ordering::Relaxed);
-                    let Ok(resp) = serde_json::from_str::<Value>(&line) else { break };
+                    let Ok(resp) = serde_json::from_str::<Value>(&line) else {
+                        break;
+                    };
                     let id = resp.get("id").and_then(Value::as_u64).unwrap_or(0);
                     let tx = pending.lock().unwrap().remove(&id);
                     if let Some(tx) = tx {
@@ -111,7 +115,8 @@ impl BaselineClient {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let req = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
         let line = format!("{req}\n");
-        self.bytes_sent.fetch_add(line.len() as u64, Ordering::Relaxed);
+        self.bytes_sent
+            .fetch_add(line.len() as u64, Ordering::Relaxed);
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.pending.lock().unwrap().insert(id, tx);
         {

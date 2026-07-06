@@ -1,10 +1,12 @@
 [package]
 name = "ohmcp-bench"
 version.workspace = true
+default-run = "ohmcp-bench"
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
+tracing-subscriber.workspace = true
 ohmcp-core = { path = "../ohmcp-core" }
 ohmcp-client = { path = "../ohmcp-client" }
 ohmcpd = { path = "../ohmcpd" }

@@ -42,7 +42,13 @@ fn record(h: &mut Histogram<u64>, start: Instant) {
     h.record(start.elapsed().as_micros() as u64).ok();
 }
 
-fn metrics(scenario: &str, stack: &str, h: &Histogram<u64>, elapsed_ms: f64, bytes: u64) -> Metrics {
+fn metrics(
+    scenario: &str,
+    stack: &str,
+    h: &Histogram<u64>,
+    elapsed_ms: f64,
+    bytes: u64,
+) -> Metrics {
     Metrics {
         scenario: scenario.into(),
         stack: stack.into(),
@@ -55,7 +61,11 @@ fn metrics(scenario: &str, stack: &str, h: &Histogram<u64>, elapsed_ms: f64, byt
     }
 }
 
-async fn bench_baseline(scenario: &str, n: usize, f: impl Fn(usize) -> (String, Value)) -> Result<Metrics> {
+async fn bench_baseline(
+    scenario: &str,
+    n: usize,
+    f: impl Fn(usize) -> (String, Value),
+) -> Result<Metrics> {
     let c = BaselineClient::connect(BASE_SOCK).await?;
     let mut h = Histogram::<u64>::new(3)?;
     let t0 = Instant::now();
@@ -70,11 +80,19 @@ async fn bench_baseline(scenario: &str, n: usize, f: impl Fn(usize) -> (String, 
     Ok(metrics(scenario, "baseline", &h, elapsed, bytes))
 }
 
-async fn bench_ohmcp(scenario: &str, n: usize, f: impl Fn(usize) -> (String, Value)) -> Result<Metrics> {
+async fn bench_ohmcp(
+    scenario: &str,
+    n: usize,
+    f: impl Fn(usize) -> (String, Value),
+) -> Result<Metrics> {
     bench_ohmcp_inner(scenario, "ohmcp", OHMCP_SOCK, Some(TOKEN.as_bytes()), n, f).await
 }
 
-async fn bench_ohmcp_plain(scenario: &str, n: usize, f: impl Fn(usize) -> (String, Value)) -> Result<Metrics> {
+async fn bench_ohmcp_plain(
+    scenario: &str,
+    n: usize,
+    f: impl Fn(usize) -> (String, Value),
+) -> Result<Metrics> {
     bench_ohmcp_inner(scenario, "ohmcp-plain", OHMCP_PLAIN_SOCK, None, n, f).await
 }
 
@@ -142,7 +160,13 @@ where
 }
 
 /// 单连接多路复用：64 个并发 worker 共享一条连接。
-async fn bench_pipelined<C>(scenario: &str, stack: &str, client: Arc<C>, workers: usize, per_worker: usize) -> Result<Metrics>
+async fn bench_pipelined<C>(
+    scenario: &str,
+    stack: &str,
+    client: Arc<C>,
+    workers: usize,
+    per_worker: usize,
+) -> Result<Metrics>
 where
     C: CallTool + Send + Sync + 'static,
 {
@@ -154,7 +178,9 @@ where
             let mut h = Histogram::<u64>::new(3).unwrap();
             for i in 0..per_worker {
                 let s = Instant::now();
-                c.call("echo", json!({"msg": format!("p-{w}-{i}")})).await.unwrap();
+                c.call("echo", json!({"msg": format!("p-{w}-{i}")}))
+                    .await
+                    .unwrap();
                 record(&mut h, s);
             }
             h
@@ -233,18 +259,73 @@ async fn main() -> Result<()> {
     const N: usize = 5000;
 
     // 1. latency：小消息 echo。
-    all.push(bench_baseline("latency-echo", N, |i| ("echo".into(), json!({"msg": format!("m{i}")}))).await?);
-    all.push(bench_ohmcp("latency-echo", N, |i| ("echo".into(), json!({"msg": format!("m{i}")}))).await?);
-    all.push(bench_ohmcp_plain("latency-echo", N, |i| ("echo".into(), json!({"msg": format!("m{i}")}))).await?);
+    all.push(
+        bench_baseline("latency-echo", N, |i| {
+            ("echo".into(), json!({"msg": format!("m{i}")}))
+        })
+        .await?,
+    );
+    all.push(
+        bench_ohmcp("latency-echo", N, |i| {
+            ("echo".into(), json!({"msg": format!("m{i}")}))
+        })
+        .await?,
+    );
+    all.push(
+        bench_ohmcp_plain("latency-echo", N, |i| {
+            ("echo".into(), json!({"msg": format!("m{i}")}))
+        })
+        .await?,
+    );
 
     // 2. bulk：大结果 kb.search（每次不同 query，无缓存收益，考验压缩+帧解析）。
-    all.push(bench_baseline("bulk-kb-search", N, |i| ("kb.search".into(), json!({"query": format!("unique-{i}"), "top_k": 10}))).await?);
-    all.push(bench_ohmcp("bulk-kb-search", N, |i| ("kb.search".into(), json!({"query": format!("unique-{i}"), "top_k": 10}))).await?);
-    all.push(bench_ohmcp_plain("bulk-kb-search", N, |i| ("kb.search".into(), json!({"query": format!("unique-{i}"), "top_k": 10}))).await?);
+    all.push(
+        bench_baseline("bulk-kb-search", N, |i| {
+            (
+                "kb.search".into(),
+                json!({"query": format!("unique-{i}"), "top_k": 10}),
+            )
+        })
+        .await?,
+    );
+    all.push(
+        bench_ohmcp("bulk-kb-search", N, |i| {
+            (
+                "kb.search".into(),
+                json!({"query": format!("unique-{i}"), "top_k": 10}),
+            )
+        })
+        .await?,
+    );
+    all.push(
+        bench_ohmcp_plain("bulk-kb-search", N, |i| {
+            (
+                "kb.search".into(),
+                json!({"query": format!("unique-{i}"), "top_k": 10}),
+            )
+        })
+        .await?,
+    );
 
     // 3. repeat：重复幂等调用（10 个不同 query 轮转，缓存命中率 ~99.8%）。
-    all.push(bench_baseline("repeat-cached", N, |i| ("kb.search".into(), json!({"query": format!("hot-{}", i % 10), "top_k": 10}))).await?);
-    all.push(bench_ohmcp("repeat-cached", N, |i| ("kb.search".into(), json!({"query": format!("hot-{}", i % 10), "top_k": 10}))).await?);
+    all.push(
+        bench_baseline("repeat-cached", N, |i| {
+            (
+                "kb.search".into(),
+                json!({"query": format!("hot-{}", i % 10), "top_k": 10}),
+            )
+        })
+        .await?,
+    );
+    all.push(
+        bench_ohmcp("repeat-cached", N, |i| {
+            (
+                "kb.search".into(),
+                json!({"query": format!("hot-{}", i % 10), "top_k": 10}),
+            )
+        })
+        .await?,
+    );
 
     // 4. pipeline：单连接 64 路并发多路复用（队头阻塞考验）。
     {
@@ -274,16 +355,38 @@ async fn main() -> Result<()> {
     for m in &all {
         println!(
             "| {} | {} | {} | {:.1} | {:.0} | {:.0} | {:.0} | {} |",
-            m.scenario, m.stack, m.ops, m.elapsed_ms, m.ops_per_sec, m.p50_us, m.p99_us, m.bytes_on_wire
+            m.scenario,
+            m.stack,
+            m.ops,
+            m.elapsed_ms,
+            m.ops_per_sec,
+            m.p50_us,
+            m.p99_us,
+            m.bytes_on_wire
         );
     }
     // 提升摘要。
     println!();
-    for sc in ["latency-echo", "bulk-kb-search", "repeat-cached", "pipeline-64", "concurrent-16"] {
-        let b = all.iter().find(|m| m.scenario == sc && m.stack == "baseline").unwrap();
-        let o = all.iter().find(|m| m.scenario == sc && m.stack == "ohmcp").unwrap();
+    for sc in [
+        "latency-echo",
+        "bulk-kb-search",
+        "repeat-cached",
+        "pipeline-64",
+        "concurrent-16",
+    ] {
+        let b = all
+            .iter()
+            .find(|m| m.scenario == sc && m.stack == "baseline")
+            .unwrap();
+        let o = all
+            .iter()
+            .find(|m| m.scenario == sc && m.stack == "ohmcp")
+            .unwrap();
         let bytes = if b.bytes_on_wire > 0 && o.bytes_on_wire > 0 {
-            format!("  wire bytes {:.1}% fewer", (1.0 - o.bytes_on_wire as f64 / b.bytes_on_wire as f64) * 100.0)
+            format!(
+                "  wire bytes {:.1}% fewer",
+                (1.0 - o.bytes_on_wire as f64 / b.bytes_on_wire as f64) * 100.0
+            )
         } else {
             String::new()
         };
