@@ -276,7 +276,7 @@ async fn handle_conn(stream: UnixStream, shared: Arc<Shared>) -> Result<()> {
 }
 
 fn unhex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if s.len() & 1 != 0 {
         return None;
     }
     (0..s.len())
