@@ -16,7 +16,7 @@
 | 安全 | `ohmcp-security` | HMAC-SHA256 挑战应答认证（令牌不过网）；会话级 ChaCha20-Poly1305 AEAD（帧头入 AAD 防篡改）；工具粒度 ACL |
 | 服务端 | `ohmcpd` | 用户态守护进程，每连接异步任务，共享工具注册表与服务端缓存 |
 | 客户端 | `ohmcp-client` | 单连接多路复用；“机会主义内联读”分发（顺序调用零任务切换，并发调用自动复用） |
-| 测试 | `ohmcp-bench` | 与 JSON-RPC 基线（对齐官方 SDK 传输语义）的五场景对比基准 |
+| 测试 | `ohmcp-bench` | 与 JSON-RPC 基线（对齐官方 SDK 传输语义）的六场景对比基准 |
 
 ## 性能（vs 官方 SDK 语义 JSON-RPC 基线）
 
