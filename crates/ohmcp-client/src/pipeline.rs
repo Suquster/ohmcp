@@ -97,7 +97,10 @@ impl PayloadPipeline {
     pub fn unwrap(&self, frame: &Frame) -> Result<Bytes, String> {
         let flags = frame.header.flags;
         let data: Bytes = if flags.encrypted() {
-            let cipher = self.cipher.as_ref().ok_or("encrypted frame but no session key")?;
+            let cipher = self
+                .cipher
+                .as_ref()
+                .ok_or("encrypted frame but no session key")?;
             cipher
                 .decrypt(
                     &frame.payload,
@@ -154,7 +157,11 @@ mod tests {
         let mut b = PayloadPipeline::new();
         a.enable_encryption([9u8; 32]);
         b.enable_encryption([9u8; 32]);
-        let (frame, flags) = a.wrap(MsgType::CallToolResult, 8, Bytes::from_static(b"secret result"));
+        let (frame, flags) = a.wrap(
+            MsgType::CallToolResult,
+            8,
+            Bytes::from_static(b"secret result"),
+        );
         assert!(flags.encrypted());
         assert_eq!(&b.unwrap(&frame).unwrap()[..], b"secret result");
     }

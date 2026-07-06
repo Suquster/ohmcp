@@ -14,8 +14,8 @@ use anyhow::{anyhow, Context, Result};
 use bytes::Bytes;
 use ohmcp_cache::{CacheKey, ResultCache};
 use ohmcp_core::{
-    AuthParams, AuthResult, CallToolResult, Frame, InitializeParams,
-    InitializeResult, Implementation, ListToolsResult, MsgType,
+    AuthParams, AuthResult, CallToolResult, Frame, Implementation, InitializeParams,
+    InitializeResult, ListToolsResult, MsgType,
 };
 use ohmcp_security::{derive_session_key, hmac_response};
 use ohmcp_transport::{FrameReader, FrameWriter};
@@ -143,7 +143,11 @@ impl OhmcpClient {
         Ok(serde_json::from_slice(&body)?)
     }
 
-    pub async fn call_tool(&self, name: &str, arguments: serde_json::Value) -> Result<CallToolResult> {
+    pub async fn call_tool(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<CallToolResult> {
         // 参数仅序列化一次：既作缓存键规范形式，又直接拼接进 payload。
         let canonical = serde_json::to_vec(&arguments)?;
         let key = CacheKey::compute(name, &canonical);
@@ -178,6 +182,7 @@ impl OhmcpClient {
 impl OhmcpClient {
     /// 等待本请求响应：若无其他持锁者则内联读 socket 并代为分发。
     async fn recv_response(&self, id: u64, mut rx: oneshot::Receiver<Frame>) -> Result<Frame> {
+        #[allow(clippy::never_loop)]
         loop {
             tokio::select! {
                 biased;
@@ -214,7 +219,12 @@ impl OhmcpClient {
 }
 
 pub(crate) fn hex(data: &[u8]) -> String {
-    data.iter().map(|b| format!("{b:02x}")).collect()
+    use std::fmt::Write;
+    data.iter()
+        .fold(String::with_capacity(data.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
 }
 
 // 供 pipeline 使用的共享缓存类型别名。

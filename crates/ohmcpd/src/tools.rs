@@ -15,6 +15,12 @@ pub struct ToolRegistry {
     cacheable: HashMap<String, bool>,
 }
 
+impl Default for ToolRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ToolRegistry {
     pub fn new() -> ToolRegistry {
         ToolRegistry {
@@ -70,7 +76,14 @@ pub fn builtin_registry() -> ToolRegistry {
         "回显输入消息",
         json!({"type":"object","properties":{"msg":{"type":"string"}}}),
         false,
-        Arc::new(|args| text_result(args.get("msg").and_then(Value::as_str).unwrap_or("").to_string())),
+        Arc::new(|args| {
+            text_result(
+                args.get("msg")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            )
+        }),
     );
 
     // 模拟知识库检索：返回较大的高冗余文本（典型 LLM 上下文注入负载）。
@@ -101,7 +114,10 @@ pub fn builtin_registry() -> ToolRegistry {
         json!({"type":"object","properties":{"device_id":{"type":"string"}}}),
         true,
         Arc::new(|args| {
-            let id = args.get("device_id").and_then(Value::as_str).unwrap_or("local");
+            let id = args
+                .get("device_id")
+                .and_then(Value::as_str)
+                .unwrap_or("local");
             text_result(
                 json!({
                     "device_id": id,

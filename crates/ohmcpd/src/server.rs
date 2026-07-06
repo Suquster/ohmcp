@@ -9,7 +9,7 @@ use bytes::Bytes;
 use ohmcp_cache::{CacheKey, ResultCache};
 use ohmcp_client::pipeline::PayloadPipeline;
 use ohmcp_core::{
-    AuthParams, AuthResult, CallToolParams, ErrorBody, Frame, InitializeResult, Implementation,
+    AuthParams, AuthResult, CallToolParams, ErrorBody, Frame, Implementation, InitializeResult,
     ListToolsResult, MsgType,
 };
 use ohmcp_security::{derive_session_key, verify_response, ToolAcl};
@@ -31,7 +31,11 @@ pub struct Shared {
 pub async fn run(socket_path: &str, token: Option<Vec<u8>>, registry: ToolRegistry) -> Result<()> {
     let _ = std::fs::remove_file(socket_path);
     let listener = UnixListener::bind(socket_path)?;
-    info!(socket = socket_path, auth = token.is_some(), "ohmcpd listening");
+    info!(
+        socket = socket_path,
+        auth = token.is_some(),
+        "ohmcpd listening"
+    );
     let mut acl = ToolAcl::new();
     // 默认策略：匿名模式（未启用认证）授予全部工具；启用认证时，
     // agent 在认证通过后获得授权。细粒度按工具授权可经配置扩展。
@@ -63,7 +67,11 @@ async fn handle_conn(stream: UnixStream, shared: Arc<Shared>) -> Result<()> {
     // 已向该客户端完整下发过的缓存键（可安全发送 CACHE_REF）。
     let mut delivered: HashSet<CacheKey> = HashSet::new();
 
-    while let Some(frame) = reader.next_frame().await.map_err(|e| anyhow::anyhow!("{e}"))? {
+    while let Some(frame) = reader
+        .next_frame()
+        .await
+        .map_err(|e| anyhow::anyhow!("{e}"))?
+    {
         let id = frame.header.request_id;
         match frame.header.msg_type {
             MsgType::Auth => {
@@ -78,7 +86,11 @@ async fn handle_conn(stream: UnixStream, shared: Arc<Shared>) -> Result<()> {
                 let result = AuthResult {
                     ok,
                     session_key_b64: None,
-                    reason: if ok { None } else { Some("invalid token".into()) },
+                    reason: if ok {
+                        None
+                    } else {
+                        Some("invalid token".into())
+                    },
                 };
                 let payload = Bytes::from(serde_json::to_vec(&result)?);
                 writer
@@ -108,8 +120,14 @@ async fn handle_conn(stream: UnixStream, shared: Arc<Shared>) -> Result<()> {
                     message: "authentication required".into(),
                     data: None,
                 };
-                let (f, _) = pipeline.wrap(MsgType::Error, id, Bytes::from(serde_json::to_vec(&err)?));
-                writer.lock().await.send(&f).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+                let (f, _) =
+                    pipeline.wrap(MsgType::Error, id, Bytes::from(serde_json::to_vec(&err)?));
+                writer
+                    .lock()
+                    .await
+                    .send(&f)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
             }
             MsgType::Initialize => {
                 let result = InitializeResult {
@@ -125,21 +143,42 @@ async fn handle_conn(stream: UnixStream, shared: Arc<Shared>) -> Result<()> {
                     id,
                     Bytes::from(serde_json::to_vec(&result)?),
                 );
-                writer.lock().await.send(&f).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+                writer
+                    .lock()
+                    .await
+                    .send(&f)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
             }
             MsgType::ListTools => {
                 let result = ListToolsResult {
                     tools: shared.registry.tools().to_vec(),
                 };
-                let (f, _) = pipeline.wrap(MsgType::ListToolsResult, id, Bytes::from(serde_json::to_vec(&result)?));
-                writer.lock().await.send(&f).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+                let (f, _) = pipeline.wrap(
+                    MsgType::ListToolsResult,
+                    id,
+                    Bytes::from(serde_json::to_vec(&result)?),
+                );
+                writer
+                    .lock()
+                    .await
+                    .send(&f)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
             }
             MsgType::Ping => {
                 let (f, _) = pipeline.wrap(MsgType::Pong, id, Bytes::from_static(b"{}"));
-                writer.lock().await.send(&f).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+                writer
+                    .lock()
+                    .await
+                    .send(&f)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
             }
             MsgType::CallTool => {
-                let body = pipeline.unwrap(&frame).map_err(|e| anyhow::anyhow!("{e}"))?;
+                let body = pipeline
+                    .unwrap(&frame)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
                 let params: CallToolParams = serde_json::from_slice(&body)?;
                 if shared
                     .acl
@@ -153,8 +192,14 @@ async fn handle_conn(stream: UnixStream, shared: Arc<Shared>) -> Result<()> {
                         message: format!("access denied: {}", params.name),
                         data: None,
                     };
-                    let (f, _) = pipeline.wrap(MsgType::Error, id, Bytes::from(serde_json::to_vec(&err)?));
-                    writer.lock().await.send(&f).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+                    let (f, _) =
+                        pipeline.wrap(MsgType::Error, id, Bytes::from(serde_json::to_vec(&err)?));
+                    writer
+                        .lock()
+                        .await
+                        .send(&f)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
                     continue;
                 }
                 let canonical = serde_json::to_vec(&params.arguments)?;
@@ -169,11 +214,17 @@ async fn handle_conn(stream: UnixStream, shared: Arc<Shared>) -> Result<()> {
                             pipeline.wrap_cache_ref(MsgType::CallToolResult, id, &key)
                         } else {
                             delivered.insert(key);
-                            let (mut f, _) = pipeline.wrap(MsgType::CallToolResult, id, result_bytes);
+                            let (mut f, _) =
+                                pipeline.wrap(MsgType::CallToolResult, id, result_bytes);
                             f.header.flags.0 |= ohmcp_core::FrameFlags::CACHEABLE;
                             f
                         };
-                        writer.lock().await.send(&f).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+                        writer
+                            .lock()
+                            .await
+                            .send(&f)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("{e}"))?;
                         continue;
                     }
                 }
@@ -182,18 +233,19 @@ async fn handle_conn(stream: UnixStream, shared: Arc<Shared>) -> Result<()> {
                     Some(result) => {
                         let result_bytes = Bytes::from(serde_json::to_vec(&result)?);
                         if cacheable {
-                            shared
-                                .cache
-                                .lock()
-                                .unwrap()
-                                .put(key, result_bytes.clone());
+                            shared.cache.lock().unwrap().put(key, result_bytes.clone());
                             delivered.insert(key);
                         }
                         let (mut f, _) = pipeline.wrap(MsgType::CallToolResult, id, result_bytes);
                         if cacheable {
                             f.header.flags.0 |= ohmcp_core::FrameFlags::CACHEABLE;
                         }
-                        writer.lock().await.send(&f).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+                        writer
+                            .lock()
+                            .await
+                            .send(&f)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("{e}"))?;
                     }
                     None => {
                         let err = ErrorBody {
@@ -201,8 +253,17 @@ async fn handle_conn(stream: UnixStream, shared: Arc<Shared>) -> Result<()> {
                             message: format!("unknown tool: {}", params.name),
                             data: None,
                         };
-                        let (f, _) = pipeline.wrap(MsgType::Error, id, Bytes::from(serde_json::to_vec(&err)?));
-                        writer.lock().await.send(&f).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+                        let (f, _) = pipeline.wrap(
+                            MsgType::Error,
+                            id,
+                            Bytes::from(serde_json::to_vec(&err)?),
+                        );
+                        writer
+                            .lock()
+                            .await
+                            .send(&f)
+                            .await
+                            .map_err(|e| anyhow::anyhow!("{e}"))?;
                     }
                 }
             }
