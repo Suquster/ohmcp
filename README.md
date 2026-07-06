@@ -48,7 +48,7 @@ cargo run --release -p ohmcp-bench --bin demo   # 端到端多 Agent 演示
 ```text
 === ohmcp 多 Agent 演示（认证 + 加密开启） ===
 
-[voice-assistant] 可用工具: ["echo", "kb.search", "kb.dump", "device.status", "math.sum"]
+[voice-assistant] 可用工具: ["echo", "kb.search", "kb.dump", "kb.blob", "device.status", "math.sum"]
 [voice-assistant] kb.search 首次调用: 991 字节, 98µs
 [voice-assistant] kb.search 重复调用（线上仅 32 字节 CACHE_REF）: 47µs
 [voice-assistant] 本地缓存: 1 命中 / 0 未命中

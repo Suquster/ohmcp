@@ -129,6 +129,36 @@ pub fn builtin_registry() -> ToolRegistry {
         }),
     );
 
+    // 参数化大小的负载生成器（非幂等，不缓存）：用于大 payload 扩展性基准，
+    // 每次调用都实际传输 size_kb 千字节，衡量传输层原始效率随负载的变化。
+    r.register(
+        "kb.blob",
+        "生成指定大小的负载（size_kb 千字节）",
+        json!({"type":"object","properties":{"size_kb":{"type":"integer"},"seed":{"type":"integer"}}}),
+        false,
+        Arc::new(|args| {
+            let size = (args.get("size_kb").and_then(Value::as_u64).unwrap_or(64) as usize)
+                .clamp(1, 4096)
+                * 1024;
+            let seed = args.get("seed").and_then(Value::as_u64).unwrap_or(0);
+            let mut out = String::with_capacity(size);
+            let mut i = 0usize;
+            while out.len() < size {
+                out.push_str(&format!(
+                    "[blob#{seed}:{i}] OpenHarmony 泛在 OS 原生 MCP 大 payload 传输样本段落，\
+                     含接口定义、参数说明与示例代码，用于衡量共享内存通道随负载扩展性。\n"
+                ));
+                i += 1;
+            }
+            let mut cut = size;
+            while cut < out.len() && !out.is_char_boundary(cut) {
+                cut += 1;
+            }
+            out.truncate(cut);
+            text_result(out)
+        }),
+    );
+
     // 模拟设备状态查询（幂等、短 TTL 可缓存）。
     r.register(
         "device.status",

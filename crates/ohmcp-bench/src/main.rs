@@ -345,6 +345,18 @@ async fn main() -> Result<()> {
         ("kb.dump".into(), json!({"doc_id": format!("d{i}")}))
     })));
 
+    // 3c. 大 payload 扩展性：16/64/256/1024 KiB，帧内 vs 共享内存通道。
+    for kb in [16usize, 64, 256, 1024] {
+        let sc = format!("scale-{kb}k");
+        let reps = (16384 / kb).max(20);
+        all.push(med3!(bench_ohmcp(&sc, reps, |i| {
+            ("kb.blob".into(), json!({"size_kb": kb, "seed": i}))
+        })));
+        all.push(med3!(bench_ohmcp_shm(&sc, reps, |i| {
+            ("kb.blob".into(), json!({"size_kb": kb, "seed": i}))
+        })));
+    }
+
     // 4. pipeline：单连接 64 路并发多路复用（队头阻塞考验）。
     {
         let bc = Arc::new(BaselineClient::connect(BASE_SOCK).await?);
