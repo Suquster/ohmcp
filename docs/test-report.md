@@ -1,0 +1,96 @@
+# ohmcp 测试方案与测试报告
+
+## 1. 测试目标
+
+1. 功能正确性：帧编解码、压缩、加解密、认证、ACL、缓存、端到端调用语义；
+2. 性能量化：在与官方 MCP SDK 同传输语义的 JSON-RPC 基线对比下，验证
+   通信效率（线上字节）、吞吐、时延的提升幅度（赛题要求 ≥ 10%）；
+3. 安全性：令牌不过网、密文防篡改、未认证拒绝服务、越权工具调用被拒。
+
+## 2. 测试环境
+
+| 项 | 值 |
+|---|---|
+| OS | Linux 5.15 x86_64 |
+| CPU | 2 vCPU |
+| Rust | rustc 1.83.0，release + `target-cpu=native` |
+| 传输 | 同机 Unix Domain Socket |
+| 基线 | JSON-RPC 2.0 换行分隔文本（对齐官方 Python/TS SDK 传输语义），按 id 分发响应，工具执行逻辑与 ohmcpd 完全一致（复用同一 ToolRegistry） |
+
+## 3. 单元测试（`cargo test --workspace`，23 项全部通过）
+
+| 模块 | 用例 |
+|---|---|
+| ohmcp-core | 帧编解码往返、半包增量解码、非法 magic 拒绝、消息类型映射、RPC 结构序列化（5） |
+| ohmcp-cache | 小 payload 不压缩、大 payload 压缩往返、缓存命中/未命中、TTL 过期、LRU 淘汰（5） |
+| ohmcp-security | HMAC 验证/拒绝、会话密钥派生一致性、加解密往返、错误密钥拒绝、AAD 篡改拒绝、ACL 授权/拒绝（9） |
+| ohmcp-client | 管线明文/压缩往返、加密往返、篡改 request_id 解密失败（3） |
+| ohmcp-transport | 双工 100 帧批量写读往返（1） |
+
+## 4. 性能测试方案
+
+`ohmcp-bench` 在同一进程内启动基线服务端与 ohmcpd（开启认证 + 加密），
+用同一工具注册表消除工具执行差异，仅度量协议栈差异。指标：ops/s、
+p50/p99 时延（HDRHistogram，µs）、线上字节。
+
+| 场景 | 负载 | 考察点 |
+|---|---|---|
+| latency-echo | 5000 次小消息 echo，顺序 | 帧解析/信封开销、端到端时延 |
+| bulk-kb-search | 5000 次不同 query 的 kb.search（~3KB 结果） | 压缩、批量数据通路 |
+| repeat-cached | 5000 次调用轮转 10 个热点 query | 内容寻址缓存 + CACHE_REF |
+| pipeline-64 | 单连接 64 并发 worker × 80 次 | 多路复用、队头阻塞 |
+| concurrent-16 | 16 个 Agent 连接 × 500 次 | 多连接并发扩展性 |
+
+## 5. 性能测试结果
+
+代表性一轮（`bench-results.json`；ohmcp 全程认证 + ChaCha20-Poly1305 加密）：
+
+| 场景 | 栈 | ops/s | p50(µs) | p99(µs) | 线上字节 |
+|---|---|---|---|---|---|
+| latency-echo | baseline | 38 303 | 24 | 29 | 1 000 869 |
+| latency-echo | **ohmcp** | **63 110** | **17** | **25** | 963 272 |
+| latency-echo | ohmcp（不加密） | 59 766 | 16 | 21 | 683 027 |
+| bulk-kb-search | baseline | 30 444 | 30 | 39 | 16 035 879 |
+| bulk-kb-search | **ohmcp** | 30 346 | 32 | 39 | **3 051 392** |
+| bulk-kb-search | ohmcp（不加密） | 38 163 | 27 | 35 | 2 771 147 |
+| repeat-cached | baseline | 29 704 | 32 | 42 | 15 718 089 |
+| repeat-cached | **ohmcp** | **43 322** | **22** | **26** | **919 662** |
+| pipeline-64 | baseline | 125 589 | 473 | 823 | — |
+| pipeline-64 | **ohmcp** | **218 396** | **272** | **309** | — |
+| concurrent-16 | baseline | 90 441 | 174 | 291 | — |
+| concurrent-16 | **ohmcp** | 87 738 | 173 | 298 | — |
+
+三轮重复运行的提升区间（ohmcp 加密 vs 基线）：
+
+| 场景 | 吞吐 | p50 时延 | 线上字节 |
+|---|---|---|---|
+| latency-echo | +10% ~ +65% | −21% ~ −36% | −3.8% |
+| bulk-kb-search | −9% ~ +1%（不加密 +13% ~ +25%） | −7% ~ +7% | **−81.0%** |
+| repeat-cached | **+24% ~ +59%** | −26% ~ −36% | **−94.1%** |
+| pipeline-64 | **+58% ~ +76%** | −34% ~ −43% | — |
+| concurrent-16 | 0% ~ +25% | 0% ~ −22% | — |
+
+### 结论
+
+- **通信效率**：大结果 −81%、热点重复调用 −94% 线上字节，远超赛题 ≥10% 要求；
+- **时延/吞吐**：小消息、缓存命中、单连接多路复用场景全面领先（最高 +76% 吞吐、
+  p99 尾延迟 823µs → 309µs）；
+- **安全代价可量化**：全程 AEAD 加密下仍取得上述成绩；bulk 场景加密开销
+  （每次 ~3KB 双向 AEAD）约抵消协议增益，为可按需关闭的合理折中；
+- 复现：`cargo run --release -p ohmcp-bench -- --json bench-results.json`。
+
+## 6. 安全测试
+
+| 用例 | 方法 | 结果 |
+|---|---|---|
+| 令牌不过网 | 认证帧仅含 HMAC(token, nonce) | ✅ 通过（协议构造保证 + 单测） |
+| 错误令牌拒绝 | `verify_response` 常数时间比较 | ✅ 单测通过 |
+| 未认证访问拒绝 | 未 Auth 直接 CallTool | ✅ 返回 -32001 |
+| 密文篡改检测 | 修改 request_id / 密文后解密 | ✅ AEAD 校验失败（单测） |
+| 越权工具调用 | ACL 未授权工具 | ✅ 返回 -32002（单测覆盖 ACL） |
+
+## 7. 局限与后续工作
+
+- bulk 大结果 + 加密场景吞吐与基线持平：可引入硬件加速 AEAD 或按连接协商加密；
+- 共享内存大 payload 通道（当前 UDS 已覆盖目标场景）；
+- 与 OpenHarmony 分布式软总线的跨设备工具调用集成。
