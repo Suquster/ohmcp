@@ -258,111 +258,105 @@ async fn main() -> Result<()> {
     let mut all: Vec<Metrics> = Vec::new();
     const N: usize = 5000;
 
+    // 每场景运行 3 次取吞吐中位数，消除运行间抖动。
+    macro_rules! med3 {
+        ($e:expr) => {{
+            let mut v = vec![$e.await?, $e.await?, $e.await?];
+            v.sort_by(|a, b| a.ops_per_sec.partial_cmp(&b.ops_per_sec).unwrap());
+            v.swap_remove(1)
+        }};
+    }
+
     // 1. latency：小消息 echo。
-    all.push(
-        bench_baseline("latency-echo", N, |i| {
-            ("echo".into(), json!({"msg": format!("m{i}")}))
-        })
-        .await?,
-    );
-    all.push(
-        bench_ohmcp("latency-echo", N, |i| {
-            ("echo".into(), json!({"msg": format!("m{i}")}))
-        })
-        .await?,
-    );
-    all.push(
-        bench_ohmcp_plain("latency-echo", N, |i| {
-            ("echo".into(), json!({"msg": format!("m{i}")}))
-        })
-        .await?,
-    );
+    all.push(med3!(bench_baseline("latency-echo", N, |i| {
+        ("echo".into(), json!({"msg": format!("m{i}")}))
+    })));
+    all.push(med3!(bench_ohmcp("latency-echo", N, |i| {
+        ("echo".into(), json!({"msg": format!("m{i}")}))
+    })));
+    all.push(med3!(bench_ohmcp_plain("latency-echo", N, |i| {
+        ("echo".into(), json!({"msg": format!("m{i}")}))
+    })));
 
     // 2. bulk：大结果 kb.search（每次不同 query，无缓存收益，考验压缩+帧解析）。
-    all.push(
-        bench_baseline("bulk-kb-search", N, |i| {
-            (
-                "kb.search".into(),
-                json!({"query": format!("unique-{i}"), "top_k": 10}),
-            )
-        })
-        .await?,
-    );
-    all.push(
-        bench_ohmcp("bulk-kb-search", N, |i| {
-            (
-                "kb.search".into(),
-                json!({"query": format!("unique-{i}"), "top_k": 10}),
-            )
-        })
-        .await?,
-    );
-    all.push(
-        bench_ohmcp_plain("bulk-kb-search", N, |i| {
-            (
-                "kb.search".into(),
-                json!({"query": format!("unique-{i}"), "top_k": 10}),
-            )
-        })
-        .await?,
-    );
+    all.push(med3!(bench_baseline("bulk-kb-search", N, |i| {
+        (
+            "kb.search".into(),
+            json!({"query": format!("unique-{i}"), "top_k": 10}),
+        )
+    })));
+    all.push(med3!(bench_ohmcp("bulk-kb-search", N, |i| {
+        (
+            "kb.search".into(),
+            json!({"query": format!("unique-{i}"), "top_k": 10}),
+        )
+    })));
+    all.push(med3!(bench_ohmcp_plain("bulk-kb-search", N, |i| {
+        (
+            "kb.search".into(),
+            json!({"query": format!("unique-{i}"), "top_k": 10}),
+        )
+    })));
 
     // 3. repeat：重复幂等调用（10 个不同 query 轮转，缓存命中率 ~99.8%）。
-    all.push(
-        bench_baseline("repeat-cached", N, |i| {
-            (
-                "kb.search".into(),
-                json!({"query": format!("hot-{}", i % 10), "top_k": 10}),
-            )
-        })
-        .await?,
-    );
-    all.push(
-        bench_ohmcp("repeat-cached", N, |i| {
-            (
-                "kb.search".into(),
-                json!({"query": format!("hot-{}", i % 10), "top_k": 10}),
-            )
-        })
-        .await?,
-    );
+    all.push(med3!(bench_baseline("repeat-cached", N, |i| {
+        (
+            "kb.search".into(),
+            json!({"query": format!("hot-{}", i % 10), "top_k": 10}),
+        )
+    })));
+    all.push(med3!(bench_ohmcp("repeat-cached", N, |i| {
+        (
+            "kb.search".into(),
+            json!({"query": format!("hot-{}", i % 10), "top_k": 10}),
+        )
+    })));
 
     // 3b. bulk-64k：整文档拉取（~64KB 结果，端侧 RAG 全文注入负载）。
     const M: usize = 500;
-    all.push(
-        bench_baseline("bulk-doc-64k", M, |i| {
-            ("kb.dump".into(), json!({"doc_id": format!("d{i}")}))
-        })
-        .await?,
-    );
-    all.push(
-        bench_ohmcp("bulk-doc-64k", M, |i| {
-            ("kb.dump".into(), json!({"doc_id": format!("d{i}")}))
-        })
-        .await?,
-    );
+    all.push(med3!(bench_baseline("bulk-doc-64k", M, |i| {
+        ("kb.dump".into(), json!({"doc_id": format!("d{i}")}))
+    })));
+    all.push(med3!(bench_ohmcp("bulk-doc-64k", M, |i| {
+        ("kb.dump".into(), json!({"doc_id": format!("d{i}")}))
+    })));
 
     // 4. pipeline：单连接 64 路并发多路复用（队头阻塞考验）。
     {
         let bc = Arc::new(BaselineClient::connect(BASE_SOCK).await?);
-        all.push(bench_pipelined("pipeline-64", "baseline", bc, 64, 80).await?);
+        all.push(med3!(bench_pipelined(
+            "pipeline-64",
+            "baseline",
+            bc.clone(),
+            64,
+            80
+        )));
         let oc = OhmcpClient::connect(OHMCP_SOCK, "bench-agent", Some(TOKEN.as_bytes())).await?;
-        all.push(bench_pipelined("pipeline-64", "ohmcp", Arc::new(oc), 64, 80).await?);
+        let oc = Arc::new(oc);
+        all.push(med3!(bench_pipelined(
+            "pipeline-64",
+            "ohmcp",
+            oc.clone(),
+            64,
+            80
+        )));
     }
 
     // 5. concur：16 并发 Agent。
-    all.push(
-        bench_concurrent("concurrent-16", "baseline", 16, 500, || async {
-            BaselineClient::connect(BASE_SOCK).await
-        })
-        .await?,
-    );
-    all.push(
-        bench_concurrent("concurrent-16", "ohmcp", 16, 500, || async {
-            OhmcpClient::connect(OHMCP_SOCK, "bench-agent", Some(TOKEN.as_bytes())).await
-        })
-        .await?,
-    );
+    all.push(med3!(bench_concurrent(
+        "concurrent-16",
+        "baseline",
+        16,
+        500,
+        || async { BaselineClient::connect(BASE_SOCK).await }
+    )));
+    all.push(med3!(bench_concurrent(
+        "concurrent-16",
+        "ohmcp",
+        16,
+        500,
+        || async { OhmcpClient::connect(OHMCP_SOCK, "bench-agent", Some(TOKEN.as_bytes())).await }
+    )));
 
     // 输出。
     println!("| scenario | stack | ops | elapsed(ms) | ops/s | p50(us) | p99(us) | bytes |");
