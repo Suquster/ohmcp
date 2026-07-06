@@ -327,6 +327,21 @@ async fn main() -> Result<()> {
         .await?,
     );
 
+    // 3b. bulk-64k：整文档拉取（~64KB 结果，端侧 RAG 全文注入负载）。
+    const M: usize = 500;
+    all.push(
+        bench_baseline("bulk-doc-64k", M, |i| {
+            ("kb.dump".into(), json!({"doc_id": format!("d{i}")}))
+        })
+        .await?,
+    );
+    all.push(
+        bench_ohmcp("bulk-doc-64k", M, |i| {
+            ("kb.dump".into(), json!({"doc_id": format!("d{i}")}))
+        })
+        .await?,
+    );
+
     // 4. pipeline：单连接 64 路并发多路复用（队头阻塞考验）。
     {
         let bc = Arc::new(BaselineClient::connect(BASE_SOCK).await?);
@@ -370,6 +385,7 @@ async fn main() -> Result<()> {
     for sc in [
         "latency-echo",
         "bulk-kb-search",
+        "bulk-doc-64k",
         "repeat-cached",
         "pipeline-64",
         "concurrent-16",

@@ -107,6 +107,28 @@ pub fn builtin_registry() -> ToolRegistry {
         }),
     );
 
+    // 模拟整文档拉取：约 64KB 高冗余文本（RAG 全文注入 / 端侧模型提示词负载）。
+    r.register(
+        "kb.dump",
+        "拉取整篇知识库文档",
+        json!({"type":"object","properties":{"doc_id":{"type":"string"}}}),
+        true,
+        Arc::new(|args| {
+            let doc_id = args.get("doc_id").and_then(Value::as_str).unwrap_or("0");
+            let mut out = String::with_capacity(64 * 1024);
+            let mut i = 0usize;
+            while out.len() < 64 * 1024 {
+                out.push_str(&format!(
+                    "[{doc_id}#{i}] OpenHarmony 分布式软总线提供设备发现、连接、组网与传输能力，\
+                     应用无需关心底层通信细节即可实现跨设备调用。本段为文档正文第 {i} 段，\
+                     含接口定义、参数说明、错误码表与示例代码片段。\n"
+                ));
+                i += 1;
+            }
+            text_result(out)
+        }),
+    );
+
     // 模拟设备状态查询（幂等、短 TTL 可缓存）。
     r.register(
         "device.status",
