@@ -17,7 +17,7 @@
 | 传输 | 同机 Unix Domain Socket |
 | 基线 | JSON-RPC 2.0 换行分隔文本（对齐官方 Python/TS SDK 传输语义），按 id 分发响应，工具执行逻辑与 ohmcpd 完全一致（复用同一 ToolRegistry） |
 
-## 3. 单元测试（`cargo test --workspace`，36 单元 + 3 端到端集成，共 39 项全部通过）
+## 3. 单元测试（`cargo test --workspace`，39 单元 + 3 端到端集成，共 42 项全部通过）
 
 | 模块 | 用例 |
 |---|---|

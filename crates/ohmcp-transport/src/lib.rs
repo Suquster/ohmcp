@@ -8,6 +8,7 @@
 //! - 读路径增量解码，零额外拷贝地切分 payload（bytes::BytesMut）。
 
 pub mod shm;
+pub mod softbus;
 
 use bytes::BytesMut;
 use ohmcp_core::{CoreError, Frame};
