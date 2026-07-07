@@ -45,6 +45,8 @@ cargo run --release -p ohmcp-bench --bin demo   # 端到端多 Agent 演示
 
 ## 端到端演示输出
 
+![端到端多 Agent 演示](docs/demo.gif)
+
 ```text
 === ohmcp 多 Agent 演示（认证 + 加密开启） ===
 
