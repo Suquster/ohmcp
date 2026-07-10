@@ -38,6 +38,12 @@ impl<R: AsyncReadExt + Unpin> FrameReader<R> {
         self.bytes_read
     }
 
+    /// 仅从已缓冲字节解码下一帧，不触发 socket 读。
+    /// 用于批量处理：缓冲中还有整帧时可先处理完再冲刷写端。
+    pub fn next_buffered(&mut self) -> Result<Option<Frame>, CoreError> {
+        Frame::decode(&mut self.buf)
+    }
+
     /// 读取下一帧；连接关闭时返回 Ok(None)。
     pub async fn next_frame(&mut self) -> Result<Option<Frame>, CoreError> {
         loop {

@@ -169,14 +169,27 @@ async fn handle_conn(
     let mut cancelled: HashSet<u64> = HashSet::new();
 
     loop {
-        let frame = tokio::select! {
-            r = reader.next_frame() => match r.map_err(|e| anyhow::anyhow!("{e}"))? {
-                Some(f) => f,
-                None => break,
-            },
-            _ = shutdown_rx.changed() => {
-                info!(agent = %agent_id, "closing session for shutdown");
-                break;
+        // 批量处理：读缓冲中还有整帧时只排队响应不冲刷；缓冲耗尽
+        // 才单次 syscall 冲刷全部排队响应，再阻塞等待下一批。
+        let frame = match reader.next_buffered().map_err(|e| anyhow::anyhow!("{e}"))? {
+            Some(f) => f,
+            None => {
+                writer
+                    .lock()
+                    .await
+                    .flush()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                tokio::select! {
+                    r = reader.next_frame() => match r.map_err(|e| anyhow::anyhow!("{e}"))? {
+                        Some(f) => f,
+                        None => break,
+                    },
+                    _ = shutdown_rx.changed() => {
+                        info!(agent = %agent_id, "closing session for shutdown");
+                        break;
+                    }
+                }
             }
         };
         let id = frame.header.request_id;
@@ -230,9 +243,7 @@ async fn handle_conn(
                 writer
                     .lock()
                     .await
-                    .send(&Frame::new(MsgType::AuthResult, id, payload))
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    .queue(&Frame::new(MsgType::AuthResult, id, payload));
                 if ok {
                     authenticated = true;
                     agent_id = params.agent_id.clone();
@@ -258,16 +269,18 @@ async fn handle_conn(
                 };
                 let (f, _) =
                     pipeline.wrap(MsgType::Error, id, Bytes::from(serde_json::to_vec(&err)?));
+                writer.lock().await.queue(&f);
+            }
+            MsgType::ShmSetup => {
+                // 顺序：先冲刷排队响应（fd 字节经原始 sendmsg 绕过写缓冲，
+                // 必须保持字节流顺序），再经辅助数据传 fd（下行环 + 上行环，
+                // 或拒绝字节），最后发结果帧。
                 writer
                     .lock()
                     .await
-                    .send(&f)
+                    .flush()
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
-            }
-            MsgType::ShmSetup => {
-                // 顺序：先经辅助数据传 fd（下行环 + 上行环，或拒绝字节），
-                // 再发结果帧，保证客户端帧读缓冲不会吞掉 SCM_RIGHTS 字节。
                 let ring = ShmRing::create(DEFAULT_SHM_CAP).ok().map(Arc::new);
                 let up_ring = ShmRing::create(DEFAULT_SHM_CAP).ok().map(Arc::new);
                 let fds = ring
@@ -295,12 +308,7 @@ async fn handle_conn(
                     id,
                     Bytes::from(serde_json::to_vec(&result)?),
                 );
-                writer
-                    .lock()
-                    .await
-                    .send(&f)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                writer.lock().await.queue(&f);
                 if ok {
                     shm = ring;
                     shm_up = up_ring;
@@ -321,12 +329,7 @@ async fn handle_conn(
                     id,
                     Bytes::from(serde_json::to_vec(&result)?),
                 );
-                writer
-                    .lock()
-                    .await
-                    .send(&f)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                writer.lock().await.queue(&f);
             }
             MsgType::ListTools => {
                 let result = ListToolsResult {
@@ -337,12 +340,7 @@ async fn handle_conn(
                     id,
                     Bytes::from(serde_json::to_vec(&result)?),
                 );
-                writer
-                    .lock()
-                    .await
-                    .send(&f)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                writer.lock().await.queue(&f);
             }
             MsgType::ListResources => {
                 let result = ohmcp_core::ListResourcesResult {
@@ -353,12 +351,7 @@ async fn handle_conn(
                     id,
                     Bytes::from(serde_json::to_vec(&result)?),
                 );
-                writer
-                    .lock()
-                    .await
-                    .send(&f)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                writer.lock().await.queue(&f);
             }
             MsgType::ReadResource => {
                 let body = pipeline
@@ -391,12 +384,7 @@ async fn handle_conn(
                         f
                     }
                 };
-                writer
-                    .lock()
-                    .await
-                    .send(&f)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                writer.lock().await.queue(&f);
             }
             MsgType::ListPrompts => {
                 let result = ohmcp_core::ListPromptsResult {
@@ -407,12 +395,7 @@ async fn handle_conn(
                     id,
                     Bytes::from(serde_json::to_vec(&result)?),
                 );
-                writer
-                    .lock()
-                    .await
-                    .send(&f)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                writer.lock().await.queue(&f);
             }
             MsgType::GetPrompt => {
                 let body = pipeline
@@ -442,21 +425,11 @@ async fn handle_conn(
                         f
                     }
                 };
-                writer
-                    .lock()
-                    .await
-                    .send(&f)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                writer.lock().await.queue(&f);
             }
             MsgType::Ping => {
                 let (f, _) = pipeline.wrap(MsgType::Pong, id, Bytes::from_static(b"{}"));
-                writer
-                    .lock()
-                    .await
-                    .send(&f)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                writer.lock().await.queue(&f);
             }
             MsgType::Cancel => {
                 // 取消为通知，无响应；登记后在处理到该请求时跳过执行。
@@ -476,12 +449,7 @@ async fn handle_conn(
                     };
                     let (f, _) =
                         pipeline.wrap(MsgType::Error, id, Bytes::from(serde_json::to_vec(&err)?));
-                    writer
-                        .lock()
-                        .await
-                        .send(&f)
-                        .await
-                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    writer.lock().await.queue(&f);
                     continue;
                 }
                 let body = pipeline
@@ -503,12 +471,7 @@ async fn handle_conn(
                     };
                     let (f, _) =
                         pipeline.wrap(MsgType::Progress, id, Bytes::from(serde_json::to_vec(&p)?));
-                    writer
-                        .lock()
-                        .await
-                        .send(&f)
-                        .await
-                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    writer.lock().await.queue(&f);
                 }
                 if shared
                     .acl
@@ -524,12 +487,7 @@ async fn handle_conn(
                     };
                     let (f, _) =
                         pipeline.wrap(MsgType::Error, id, Bytes::from(serde_json::to_vec(&err)?));
-                    writer
-                        .lock()
-                        .await
-                        .send(&f)
-                        .await
-                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    writer.lock().await.queue(&f);
                     continue;
                 }
                 let cacheable = shared.registry.is_cacheable(&params.name);
@@ -556,12 +514,7 @@ async fn handle_conn(
                             f.header.flags.0 |= FrameFlags::CACHEABLE;
                             f
                         };
-                        writer
-                            .lock()
-                            .await
-                            .send(&f)
-                            .await
-                            .map_err(|e| anyhow::anyhow!("{e}"))?;
+                        writer.lock().await.queue(&f);
                         continue;
                     }
                 }
@@ -577,12 +530,7 @@ async fn handle_conn(
                         if key.is_some() {
                             f.header.flags.0 |= FrameFlags::CACHEABLE;
                         }
-                        writer
-                            .lock()
-                            .await
-                            .send(&f)
-                            .await
-                            .map_err(|e| anyhow::anyhow!("{e}"))?;
+                        writer.lock().await.queue(&f);
                     }
                     None => {
                         let err = ErrorBody {
@@ -595,12 +543,7 @@ async fn handle_conn(
                             id,
                             Bytes::from(serde_json::to_vec(&err)?),
                         );
-                        writer
-                            .lock()
-                            .await
-                            .send(&f)
-                            .await
-                            .map_err(|e| anyhow::anyhow!("{e}"))?;
+                        writer.lock().await.queue(&f);
                     }
                 }
             }
@@ -609,6 +552,8 @@ async fn handle_conn(
             }
         }
     }
+    // 会话结束（对端关闭或停机）前冲刷仍在排队的响应。
+    let _ = writer.lock().await.flush().await;
     Ok(())
 }
 
