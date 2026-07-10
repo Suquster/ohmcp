@@ -84,6 +84,11 @@ pub enum MsgType {
     Cancel = 0x15,
     /// 进度通知（服务端 → 客户端，无响应）。
     Progress = 0x16,
+    SubscribeResource = 0x17,
+    SubscribeResourceResult = 0x18,
+    UnsubscribeResource = 0x19,
+    /// 资源更新通知（服务端 → 已订阅客户端，无响应）。
+    ResourceUpdated = 0x1A,
     Error = 0x7F,
 }
 
@@ -112,6 +117,10 @@ impl MsgType {
             0x14 => MsgType::GetPromptResult,
             0x15 => MsgType::Cancel,
             0x16 => MsgType::Progress,
+            0x17 => MsgType::SubscribeResource,
+            0x18 => MsgType::SubscribeResourceResult,
+            0x19 => MsgType::UnsubscribeResource,
+            0x1A => MsgType::ResourceUpdated,
             0x7F => MsgType::Error,
             other => return Err(CoreError::Codec(format!("unknown msg type {other:#x}"))),
         })

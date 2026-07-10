@@ -195,6 +195,65 @@ async fn resources_and_prompts_roundtrip() {
 }
 
 #[tokio::test]
+async fn resource_subscription_delivers_updates() {
+    let sock = sock_path("subscribe");
+    let _ = std::fs::remove_file(&sock);
+    let registry = ohmcpd::tools::builtin_registry();
+    let updater = registry.updater();
+    {
+        let sock = sock.clone();
+        tokio::spawn(async move { ohmcpd::server::run(&sock, None, registry).await });
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let c = OhmcpClient::connect(&sock, "agent", None).await.unwrap();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    c.on_resource_updated(move |uri| {
+        let _ = tx.send(uri);
+    });
+
+    // 订阅不存在的资源必须返回错误且会话存活。
+    assert!(c.subscribe_resource("ohmcp://no/such").await.is_err());
+    c.ping().await.unwrap();
+
+    c.subscribe_resource("ohmcp://docs/protocol").await.unwrap();
+    assert!(updater.update("ohmcp://docs/protocol", "更新后的协议文档 v2"));
+
+    // 通知在会话空闲等待期推送；发一个 ping 驱动客户端读循环。
+    let uri = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if let Ok(u) = rx.try_recv() {
+                break u;
+            }
+            c.ping().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("subscribed update must be delivered");
+    assert_eq!(uri, "ohmcp://docs/protocol");
+
+    // 读取到的内容为更新后的文本。
+    let rd = c.read_resource("ohmcp://docs/protocol").await.unwrap();
+    assert_eq!(rd.contents[0].text.as_deref(), Some("更新后的协议文档 v2"));
+
+    // 退订后更新不再推送。
+    c.unsubscribe_resource("ohmcp://docs/protocol")
+        .await
+        .unwrap();
+    while rx.try_recv().is_ok() {}
+    assert!(updater.update("ohmcp://docs/protocol", "v3"));
+    for _ in 0..10 {
+        c.ping().await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        rx.try_recv().is_err(),
+        "no notification after unsubscribing"
+    );
+}
+
+#[tokio::test]
 async fn forward_secret_session_encrypts_and_works() {
     let sock = sock_path("fs");
     spawn_server(&sock, Some(b"fs-token".to_vec())).await;

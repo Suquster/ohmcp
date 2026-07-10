@@ -1,7 +1,7 @@
 //! 内建演示工具集：模拟真实 Agent 工作负载的四类典型工具。
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use ohmcp_core::{
     CallToolResult, ContentBlock, GetPromptResult, Prompt, PromptArgument, PromptMessage, Resource,
@@ -18,7 +18,10 @@ pub struct ToolRegistry {
     /// 幂等（可缓存）工具集合。
     cacheable: HashMap<String, bool>,
     resources: Vec<Resource>,
-    resource_contents: HashMap<String, ResourceContents>,
+    resource_contents: Arc<RwLock<HashMap<String, ResourceContents>>>,
+    /// 资源更新事件（uri）广播：会话据此向已订阅客户端推送
+    /// ResourceUpdated 通知。
+    resource_events: tokio::sync::broadcast::Sender<String>,
     prompts: Vec<Prompt>,
     prompt_handlers: HashMap<String, PromptHandler>,
 }
@@ -36,7 +39,8 @@ impl ToolRegistry {
             handlers: HashMap::new(),
             cacheable: HashMap::new(),
             resources: Vec::new(),
-            resource_contents: HashMap::new(),
+            resource_contents: Arc::new(RwLock::new(HashMap::new())),
+            resource_events: tokio::sync::broadcast::channel(64).0,
             prompts: Vec::new(),
             prompt_handlers: HashMap::new(),
         }
@@ -79,7 +83,7 @@ impl ToolRegistry {
             description: None,
             mime_type: Some(mime.to_string()),
         });
-        self.resource_contents.insert(
+        self.resource_contents.write().unwrap().insert(
             uri.to_string(),
             ResourceContents {
                 uri: uri.to_string(),
@@ -94,8 +98,39 @@ impl ToolRegistry {
         &self.resources
     }
 
-    pub fn read_resource(&self, uri: &str) -> Option<&ResourceContents> {
-        self.resource_contents.get(uri)
+    pub fn read_resource(&self, uri: &str) -> Option<ResourceContents> {
+        self.resource_contents.read().unwrap().get(uri).cloned()
+    }
+
+    pub fn has_resource(&self, uri: &str) -> bool {
+        self.resource_contents.read().unwrap().contains_key(uri)
+    }
+
+    /// 更新已登记资源的文本内容并广播更新事件；未登记返回 false。
+    pub fn update_resource(&self, uri: &str, text: &str) -> bool {
+        let mut map = self.resource_contents.write().unwrap();
+        match map.get_mut(uri) {
+            Some(c) => {
+                c.text = Some(text.to_string());
+                drop(map);
+                let _ = self.resource_events.send(uri.to_string());
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<String> {
+        self.resource_events.subscribe()
+    }
+
+    /// 可克隆的资源更新句柄：在注册表移交给服务端后，宿主仍可
+    /// 据此更新资源内容并触发订阅通知。
+    pub fn updater(&self) -> ResourceUpdater {
+        ResourceUpdater {
+            contents: Arc::clone(&self.resource_contents),
+            events: self.resource_events.clone(),
+        }
     }
 
     /// 登记提示模板（MCP prompts 语义）。
@@ -111,6 +146,29 @@ impl ToolRegistry {
 
     pub fn get_prompt(&self, name: &str, args: &Value) -> Option<GetPromptResult> {
         self.prompt_handlers.get(name).map(|h| h(args))
+    }
+}
+
+/// 资源更新句柄：与注册表共享资源内容与事件广播端。
+#[derive(Clone)]
+pub struct ResourceUpdater {
+    contents: Arc<RwLock<HashMap<String, ResourceContents>>>,
+    events: tokio::sync::broadcast::Sender<String>,
+}
+
+impl ResourceUpdater {
+    /// 更新已登记资源的文本内容并广播更新事件；未登记返回 false。
+    pub fn update(&self, uri: &str, text: &str) -> bool {
+        let mut map = self.contents.write().unwrap();
+        match map.get_mut(uri) {
+            Some(c) => {
+                c.text = Some(text.to_string());
+                drop(map);
+                let _ = self.events.send(uri.to_string());
+                true
+            }
+            None => false,
+        }
     }
 }
 

@@ -33,6 +33,9 @@ use pipeline::PayloadPipeline;
 /// 进度通知回调。
 type ProgressCallback = Box<dyn Fn(ohmcp_core::ProgressParams) + Send + Sync>;
 
+/// 资源更新通知回调（参数为资源 uri）。
+type ResourceUpdatedCallback = Box<dyn Fn(String) + Send + Sync>;
+
 /// 多路复用 MCP 客户端连接。
 ///
 /// 响应分发采用“机会主义内联读”（connection combiner）：
@@ -50,6 +53,8 @@ pub struct OhmcpClient {
     shm_up: Option<ShmRing>,
     /// 按请求 id 登记的进度回调（服务端 Progress 通知分发）。
     progress: std::sync::Mutex<HashMap<u64, ProgressCallback>>,
+    /// 资源更新通知回调（ResourceUpdated 通知分发）。
+    resource_updated: std::sync::Mutex<Option<ResourceUpdatedCallback>>,
 }
 
 impl OhmcpClient {
@@ -175,6 +180,7 @@ impl OhmcpClient {
             shm,
             shm_up,
             progress: std::sync::Mutex::new(HashMap::new()),
+            resource_updated: std::sync::Mutex::new(None),
         });
 
         // initialize 握手。
@@ -348,6 +354,27 @@ impl OhmcpClient {
         Ok(serde_json::from_slice(&body)?)
     }
 
+    /// 订阅资源更新通知（resources/subscribe 语义）。
+    pub async fn subscribe_resource(&self, uri: &str) -> Result<()> {
+        let params = serde_json::to_vec(&serde_json::json!({ "uri": uri }))?;
+        self.request(MsgType::SubscribeResource, Bytes::from(params))
+            .await?;
+        Ok(())
+    }
+
+    /// 退订资源更新通知。
+    pub async fn unsubscribe_resource(&self, uri: &str) -> Result<()> {
+        let params = serde_json::to_vec(&serde_json::json!({ "uri": uri }))?;
+        self.request(MsgType::UnsubscribeResource, Bytes::from(params))
+            .await?;
+        Ok(())
+    }
+
+    /// 登记资源更新回调：已订阅资源更新时以 uri 回调。
+    pub fn on_resource_updated(&self, cb: impl Fn(String) + Send + Sync + 'static) {
+        *self.resource_updated.lock().unwrap() = Some(Box::new(cb));
+    }
+
     pub async fn list_prompts(&self) -> Result<ohmcp_core::ListPromptsResult> {
         let body = self.request(MsgType::ListPrompts, Bytes::new()).await?;
         Ok(serde_json::from_slice(&body)?)
@@ -425,6 +452,21 @@ impl OhmcpClient {
                                     let cbs = self.progress.lock().unwrap();
                                     if let Some(cb) = cbs.get(&p.request_id) {
                                         cb(p);
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                        // 资源更新通知也不是响应：回调后继续读。
+                        if frame.header.msg_type == MsgType::ResourceUpdated {
+                            if let Ok(body) = self.pipeline.unwrap(&frame) {
+                                if let Ok(p) = serde_json::from_slice::<
+                                    ohmcp_core::ResourceUpdatedParams,
+                                >(&body)
+                                {
+                                    if let Some(cb) = self.resource_updated.lock().unwrap().as_ref()
+                                    {
+                                        cb(p.uri);
                                     }
                                 }
                             }

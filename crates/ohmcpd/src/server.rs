@@ -167,8 +167,11 @@ async fn handle_conn(
     let mut shm_up: Option<Arc<ShmRing>> = None;
     // 已收到取消通知但尚未处理到的请求 id（尽力而为取消语义）。
     let mut cancelled: HashSet<u64> = HashSet::new();
+    // 本会话已订阅的资源 uri；资源更新事件命中时推送 ResourceUpdated。
+    let mut subscribed: HashSet<String> = HashSet::new();
+    let mut resource_events = shared.registry.subscribe_events();
 
-    loop {
+    'session: loop {
         // 批量处理：读缓冲中还有整帧时只排队响应不冲刷；缓冲耗尽
         // 才单次 syscall 冲刷全部排队响应，再阻塞等待下一批。
         let frame = match reader.next_buffered().map_err(|e| anyhow::anyhow!("{e}"))? {
@@ -180,14 +183,31 @@ async fn handle_conn(
                     .flush()
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
-                tokio::select! {
-                    r = reader.next_frame() => match r.map_err(|e| anyhow::anyhow!("{e}"))? {
-                        Some(f) => f,
-                        None => break,
-                    },
-                    _ = shutdown_rx.changed() => {
-                        info!(agent = %agent_id, "closing session for shutdown");
-                        break;
+                'wait: loop {
+                    tokio::select! {
+                        r = reader.next_frame() => match r.map_err(|e| anyhow::anyhow!("{e}"))? {
+                            Some(f) => break 'wait f,
+                            None => break 'session,
+                        },
+                        _ = shutdown_rx.changed() => {
+                            info!(agent = %agent_id, "closing session for shutdown");
+                            break 'session;
+                        }
+                        evt = resource_events.recv() => {
+                            if let Ok(uri) = evt {
+                                if subscribed.contains(&uri) {
+                                    let params = ohmcp_core::ResourceUpdatedParams { uri };
+                                    let (f, _) = pipeline.wrap(
+                                        MsgType::ResourceUpdated,
+                                        0,
+                                        Bytes::from(serde_json::to_vec(&params)?),
+                                    );
+                                    let mut w = writer.lock().await;
+                                    w.queue(&f);
+                                    w.flush().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -361,7 +381,7 @@ async fn handle_conn(
                 let f = match shared.registry.read_resource(&params.uri) {
                     Some(contents) => {
                         let result = ohmcp_core::ReadResourceResult {
-                            contents: vec![contents.clone()],
+                            contents: vec![contents],
                         };
                         let (f, _) = pipeline.wrap(
                             MsgType::ReadResourceResult,
@@ -429,6 +449,36 @@ async fn handle_conn(
             }
             MsgType::Ping => {
                 let (f, _) = pipeline.wrap(MsgType::Pong, id, Bytes::from_static(b"{}"));
+                writer.lock().await.queue(&f);
+            }
+            MsgType::SubscribeResource | MsgType::UnsubscribeResource => {
+                let is_sub = frame.header.msg_type == MsgType::SubscribeResource;
+                let body = pipeline
+                    .unwrap(&frame)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let params: ohmcp_core::SubscribeResourceParams = serde_json::from_slice(&body)?;
+                let f = if is_sub && !shared.registry.has_resource(&params.uri) {
+                    let err = ErrorBody {
+                        code: -32002,
+                        message: format!("resource not found: {}", params.uri),
+                        data: None,
+                    };
+                    let (f, _) =
+                        pipeline.wrap(MsgType::Error, id, Bytes::from(serde_json::to_vec(&err)?));
+                    f
+                } else {
+                    if is_sub {
+                        subscribed.insert(params.uri);
+                    } else {
+                        subscribed.remove(&params.uri);
+                    }
+                    let (f, _) = pipeline.wrap(
+                        MsgType::SubscribeResourceResult,
+                        id,
+                        Bytes::from_static(b"{}"),
+                    );
+                    f
+                };
                 writer.lock().await.queue(&f);
             }
             MsgType::Cancel => {

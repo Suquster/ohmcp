@@ -58,12 +58,17 @@ ohmcp 的目标：为 OpenHarmony 设计一套**原生 MCP 协议栈**，保持 
   `CACHEABLE(0x08)`；
 - msgtype 直接映射 MCP 方法（Initialize/ListTools/CallTool/Ping/Auth、
   ListResources/ReadResource/ListPrompts/GetPrompt 及其结果、
-  Cancel/Progress 通知、Error）；
+  Cancel/Progress 通知、SubscribeResource/UnsubscribeResource 及其结果、
+  ResourceUpdated 通知、Error）；
 - **取消通知**（`Cancel`，尽力而为语义）：客户端可对在途请求发送取消，
   服务端尚未处理到该请求时跳过执行并回 `-32800`，已完成则安全忽略；
 - **进度通知**（`Progress`）：CallTool 携带 `_meta.progress` 时，服务端在
   执行期间推送进度帧（requestId/progress/total），客户端按请求 id 分发回调，
-  与最终结果帧共用同一多路复用连接。
+  与最终结果帧共用同一多路复用连接；
+- **资源订阅**（`SubscribeResource`/`UnsubscribeResource`/`ResourceUpdated`，
+  resources/subscribe 语义）：会话级订阅集合 + 注册表广播事件，资源内容
+  更新时服务端向已订阅会话推送 ResourceUpdated 通知（空闲等待期即时冲刷），
+  客户端按登记回调分发；未订阅会话零开销。
 
 对比：JSON-RPC 基线每次 echo 往返约 200 字节文本 + 两次完整 JSON 解析；
 OHMF 头部开销 17 字节，payload 仅含参数本体。

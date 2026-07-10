@@ -133,6 +133,18 @@ pub struct ReadResourceResult {
     pub contents: Vec<ResourceContents>,
 }
 
+/// 资源订阅/退订参数（resources/subscribe 语义）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubscribeResourceParams {
+    pub uri: String,
+}
+
+/// 资源更新通知（notifications/resources/updated 语义，服务端 → 客户端）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResourceUpdatedParams {
+    pub uri: String,
+}
+
 /// MCP 提示模板描述（prompts/list 条目）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Prompt {
