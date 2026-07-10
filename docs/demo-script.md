@@ -7,7 +7,7 @@
 - 画面：GitLink 仓库首页 https://www.gitlink.org.cn/Taoyouce/ohmcp
 - 旁白：ohmcp 是面向 OpenHarmony 的原生 MCP 协议栈——保持 MCP 语义不变，
   用二进制帧、多路复用、内容寻址缓存、默认加密和共享内存快速通道
-  重造传输底盘。线上字节最高降低 99.8%，吞吐最高提升 84%。
+  重造传输底盘。线上字节最高降低 99.8%，吞吐最高提升 157%。
 
 ## 镜头 2（0:20–0:50）：一键构建与全量测试
 
@@ -40,7 +40,7 @@ cargo run --release -p ohmcp-bench
 - 画面重点：结果表滚动后停在汇总行；切到 README 中的吞吐对比图
   （docs/benchmark-chart.svg）。
 - 旁白：七大场景每场景 3 次取中位数，吞吐全部为正：
-  pipeline-64 +89%、repeat-cached 字节 −94%、bulk-doc-64k 经共享内存
+  pipeline-64 +157%、repeat-cached 字节 −94%、bulk-doc-64k 经共享内存
   通道套接字字节 −99.8%；扩展性扫描显示 1MiB 负载下 p99 −39%。
 
 ## 镜头 5（2:20–2:50）：文档与 CI

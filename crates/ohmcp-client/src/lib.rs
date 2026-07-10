@@ -230,7 +230,20 @@ impl OhmcpClient {
         };
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id, tx);
-        {
+        // 机会主义写聚合：存在其他在飞请求时先排队再让出一次调度，
+        // 并发请求在此窗口内排入同一写缓冲，由首个到达冲刷点的任务
+        // 单次 syscall 写出（缓冲已被他人冲刷时 flush 为空操作）；
+        // 无并发时直接写出，不引入额外调度延迟。
+        let contended = self.pending.lock().unwrap().len() > 1;
+        if contended {
+            {
+                let mut w = self.writer.lock().await;
+                w.queue(&frame);
+            }
+            tokio::task::yield_now().await;
+            let mut w = self.writer.lock().await;
+            w.flush().await.map_err(|e| anyhow!("{e}"))?;
+        } else {
             let mut w = self.writer.lock().await;
             w.send(&frame).await.map_err(|e| anyhow!("{e}"))?;
         }
