@@ -16,7 +16,8 @@ use ohmcp_core::{
 };
 use ohmcp_security::{derive_session_key, verify_response, EphemeralKeyPair, ToolAcl};
 use ohmcp_transport::shm::{
-    encode_shm_ref, send_fd_blocking, send_fd_decline, ShmRing, DEFAULT_SHM_CAP,
+    decode_shm_ref, encode_shm_ref, send_fd_blocking, send_fd_decline, ShmRing, DEFAULT_SHM_CAP,
+    SHM_THRESHOLD,
 };
 use ohmcp_transport::{FrameReader, FrameWriter};
 use serde_json::json;
@@ -145,9 +146,6 @@ async fn reject_busy(stream: UnixStream) {
     }
 }
 
-/// 走共享内存通道的最小 payload（小于此值帧内传输更划算）。
-const SHM_THRESHOLD: usize = 16 * 1024;
-
 async fn handle_conn(
     stream: UnixStream,
     shared: Arc<Shared>,
@@ -163,8 +161,10 @@ async fn handle_conn(
     let mut agent_id = String::from("anonymous");
     // 已向该客户端完整下发过的缓存键（可安全发送 CACHE_REF）。
     let mut delivered: HashSet<CacheKey> = HashSet::new();
-    // 会话级共享内存大 payload 通道（客户端显式协商后启用）。
+    // 会话级共享内存大 payload 通道（客户端显式协商后启用）：
+    // 下行环（服务端写 → 客户端读）与上行环（客户端写 → 服务端读）。
     let mut shm: Option<Arc<ShmRing>> = None;
+    let mut shm_up: Option<Arc<ShmRing>> = None;
     // 已收到取消通知但尚未处理到的请求 id（尽力而为取消语义）。
     let mut cancelled: HashSet<u64> = HashSet::new();
 
@@ -180,6 +180,24 @@ async fn handle_conn(
             }
         };
         let id = frame.header.request_id;
+        // 上行 SHM 引用：将 12 字节引用替换为上行环中的实际数据。
+        let frame = if frame.header.flags.shm_ref() {
+            let ring = shm_up
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("SHM_REF request but uplink not negotiated"))?;
+            let (offset, len) = decode_shm_ref(&frame.payload)
+                .ok_or_else(|| anyhow::anyhow!("bad uplink shm ref payload"))?;
+            let data = ring
+                .read_release(offset, len as usize)
+                .ok_or_else(|| anyhow::anyhow!("invalid uplink shm ref"))?;
+            let mut f = frame;
+            f.payload = Bytes::from(data);
+            f.header.payload_len = len;
+            f.header.flags.0 &= !FrameFlags::SHM_REF;
+            f
+        } else {
+            frame
+        };
         match frame.header.msg_type {
             MsgType::Auth => {
                 let params: AuthParams = serde_json::from_slice(&frame.payload)?;
@@ -248,25 +266,30 @@ async fn handle_conn(
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
             }
             MsgType::ShmSetup => {
-                // 顺序：先经辅助数据传 fd（或拒绝字节），再发结果帧，
-                // 保证客户端帧读缓冲不会吞掉携带 SCM_RIGHTS 的字节。
+                // 顺序：先经辅助数据传 fd（下行环 + 上行环，或拒绝字节），
+                // 再发结果帧，保证客户端帧读缓冲不会吞掉 SCM_RIGHTS 字节。
                 let ring = ShmRing::create(DEFAULT_SHM_CAP).ok().map(Arc::new);
-                let ring_fd = ring.as_ref().map(|r| r.raw_fd());
+                let up_ring = ShmRing::create(DEFAULT_SHM_CAP).ok().map(Arc::new);
+                let fds = ring
+                    .as_ref()
+                    .zip(up_ring.as_ref())
+                    .map(|(d, u)| (d.raw_fd(), u.raw_fd()));
                 let sock_dup = unsafe { libc::dup(raw_fd) };
                 if sock_dup < 0 {
                     anyhow::bail!("dup failed during shm setup");
                 }
                 let sent = tokio::task::spawn_blocking(move || {
-                    let r = match ring_fd {
-                        Some(fd) => send_fd_blocking(sock_dup, fd),
+                    let r = match fds {
+                        Some((down_fd, up_fd)) => send_fd_blocking(sock_dup, down_fd)
+                            .and_then(|()| send_fd_blocking(sock_dup, up_fd)),
                         None => send_fd_decline(sock_dup),
                     };
                     unsafe { libc::close(sock_dup) };
                     r
                 })
                 .await?;
-                let ok = sent.is_ok() && ring.is_some();
-                let result = json!({"ok": ok, "size": DEFAULT_SHM_CAP});
+                let ok = sent.is_ok() && ring.is_some() && up_ring.is_some();
+                let result = json!({"ok": ok, "size": DEFAULT_SHM_CAP, "up_size": DEFAULT_SHM_CAP});
                 let (f, _) = pipeline.wrap(
                     MsgType::ShmSetupResult,
                     id,
@@ -280,7 +303,8 @@ async fn handle_conn(
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
                 if ok {
                     shm = ring;
-                    info!(agent = %agent_id, cap = DEFAULT_SHM_CAP, "shm channel enabled");
+                    shm_up = up_ring;
+                    info!(agent = %agent_id, cap = DEFAULT_SHM_CAP, "bidirectional shm channel enabled");
                 }
             }
             MsgType::Initialize => {
@@ -508,11 +532,19 @@ async fn handle_conn(
                         .map_err(|e| anyhow::anyhow!("{e}"))?;
                     continue;
                 }
-                let canonical = serde_json::to_vec(&params.arguments)?;
-                let key = CacheKey::compute(&params.name, &canonical);
                 let cacheable = shared.registry.is_cacheable(&params.name);
+                // 缓存键（规范化参数的 SHA-256）仅对可缓存工具计算，
+                // 非幂等大参数调用不付哈希开销。
+                let key = if cacheable {
+                    Some(CacheKey::compute(
+                        &params.name,
+                        &serde_json::to_vec(&params.arguments)?,
+                    ))
+                } else {
+                    None
+                };
 
-                if cacheable {
+                if let Some(key) = key {
                     let cached = shared.cache.lock().unwrap().get(&key);
                     if let Some(result_bytes) = cached {
                         let f = if delivered.contains(&key) {
@@ -537,12 +569,12 @@ async fn handle_conn(
                 match shared.registry.call(&params.name, &params.arguments) {
                     Some(result) => {
                         let result_bytes = Bytes::from(serde_json::to_vec(&result)?);
-                        if cacheable {
+                        if let Some(key) = key {
                             shared.cache.lock().unwrap().put(key, result_bytes.clone());
                             delivered.insert(key);
                         }
                         let mut f = wrap_maybe_shm(&pipeline, &shm, id, result_bytes);
-                        if cacheable {
+                        if key.is_some() {
                             f.header.flags.0 |= FrameFlags::CACHEABLE;
                         }
                         writer

@@ -11,12 +11,12 @@
 | 层 | crate | 说明 |
 |---|---|---|
 | 帧格式 | `ohmcp-core` | OHMF 二进制帧：17 字节定长头（magic/版本/标志/类型/request_id/长度），替代 JSON-RPC 文本信封 |
-| 传输 | `ohmcp-transport` | Unix Domain Socket 帧化读写；写路径批量聚合减少 syscall，读路径增量零拷贝解码；可选共享内存大 payload 通道（memfd 环形缓冲 + SCM_RIGHTS fd 传递，零套接字拷贝）；DSoftBus Session 适配 PoC（softbus.rs） |
+| 传输 | `ohmcp-transport` | Unix Domain Socket 帧化读写；写路径批量聚合减少 syscall，读路径增量零拷贝解码；可选双向共享内存大 payload 通道（memfd 环形缓冲 + SCM_RIGHTS fd 传递，上下行零套接字拷贝）；DSoftBus Session 适配 PoC（softbus.rs） |
 | 上下文优化 | `ohmcp-cache` | LZ4 透明压缩（512B 阈值）；内容寻址结果缓存 `sha256(tool ‖ args)`，命中时仅回传 32 字节 CACHE_REF |
 | 安全 | `ohmcp-security` | HMAC-SHA256 挑战应答认证（令牌不过网）；X25519 临时密钥交换（前向保密）；会话级 ChaCha20-Poly1305 AEAD（帧头入 AAD 防篡改）；工具粒度 ACL |
 | 服务端 | `ohmcpd` | 用户态守护进程，每连接异步任务，共享工具注册表与服务端缓存 |
 | 客户端 | `ohmcp-client` | 单连接多路复用；“机会主义内联读”分发（顺序调用零任务切换，并发调用自动复用） |
-| 测试 | `ohmcp-bench` | 与 JSON-RPC 基线（对齐官方 SDK 传输语义）的六场景对比基准 |
+| 测试 | `ohmcp-bench` | 与 JSON-RPC 基线（对齐官方 SDK 传输语义）的七场景对比基准 |
 
 ## 性能（vs 官方 SDK 语义 JSON-RPC 基线）
 
@@ -28,13 +28,14 @@
 | bulk-kb-search（5k 大结果） | **+15% ~ +20%** | −10% ~ −13% | **−81.0%** |
 | bulk-doc-64k（整文档拉取） | **+5% ~ +24%** | −13% ~ −21% | **−95.6%** |
 | bulk-doc-64k（共享内存通道） | **+52%** | **−32%** | **−99.8%** |
+| upload-256k（双向共享内存） | **+81%** | **−47%** | **−99.99%** |
 | repeat-cached（热点重复调用） | **+37% ~ +59%** | −26% ~ −36% | **−94.1%** |
 | pipeline-64（单连接 64 路复用） | **+66% ~ +84%** | −34% ~ −46% | — |
 | concurrent-16（16 Agent） | **+30% ~ +41%** | −23% ~ −33% | — |
 
 （每场景 3 次运行取吞吐中位数，区间为多次完整基准运行观测范围）
 
-![六场景吞吐对比](docs/benchmark-chart.svg)
+![七场景吞吐对比](docs/benchmark-chart.svg)
 
 复现：
 
@@ -86,7 +87,7 @@ let result = c.call_tool("kb.search", serde_json::json!({"query": "鸿蒙", "top
 ## 测试
 
 ```bash
-cargo test --workspace                     # 42 单元 + 14 端到端集成测试，56 项全绿
+cargo test --workspace                     # 42 单元 + 15 端到端集成测试，57 项全绿
 cargo clippy --workspace --all-targets -- -D warnings   # 零警告（CI 强制）
 ```
 

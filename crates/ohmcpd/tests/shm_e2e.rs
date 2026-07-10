@@ -101,6 +101,34 @@ async fn shm_mixed_sizes_and_fallback_coexist() {
 }
 
 #[tokio::test]
+async fn uplink_large_request_bypasses_socket() {
+    let sock = sock_path("uplink");
+    spawn_server(&sock, None).await;
+
+    let client = OhmcpClient::connect_shm(&sock, "up-agent", None)
+        .await
+        .expect("connect_shm");
+    assert!(client.shm_enabled());
+
+    // 128KB 请求参数经上行共享内存环发送：帧内仅 12 字节引用，
+    // 线上字节数远小于 payload；echo 结果经下行环返回且内容一致。
+    let big = "u".repeat(128 * 1024);
+    let before = client.wire_bytes().await;
+    for i in 0..4u32 {
+        let r = client
+            .call_tool("echo", json!({ "msg": format!("{big}-{i}") }))
+            .await
+            .expect("uplink call");
+        assert_eq!(text_of(&r), format!("{big}-{i}"));
+    }
+    let delta = client.wire_bytes().await - before;
+    assert!(
+        delta < 8 * 1024,
+        "socket bytes must stay tiny with bidirectional shm, got {delta}"
+    );
+}
+
+#[tokio::test]
 async fn plain_connect_matches_shm_result() {
     let sock = sock_path("parity");
     spawn_server(&sock, None).await;

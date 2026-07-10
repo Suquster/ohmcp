@@ -21,6 +21,8 @@ const HDR: usize = 128;
 pub const DEFAULT_SHM_CAP: usize = 4 * 1024 * 1024;
 /// 环容量上限（防御性）。
 pub const MAX_SHM_CAP: usize = 64 * 1024 * 1024;
+/// 走共享内存通道的最小 payload（小于此值帧内传输更划算）。
+pub const SHM_THRESHOLD: usize = 16 * 1024;
 
 /// memfd 环形缓冲区。创建方与接入方共用同一实现。
 pub struct ShmRing {

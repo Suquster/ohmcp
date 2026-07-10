@@ -39,7 +39,7 @@ cargo run --release -p ohmcp-bench
 
 - 画面重点：结果表滚动后停在汇总行；切到 README 中的吞吐对比图
   （docs/benchmark-chart.svg）。
-- 旁白：六大场景每场景 3 次取中位数，吞吐全部为正：
+- 旁白：七大场景每场景 3 次取中位数，吞吐全部为正：
   pipeline-64 +84%、repeat-cached 字节 −94%、bulk-doc-64k 经共享内存
   通道套接字字节 −99.8%；扩展性扫描显示 1MiB 负载下 p99 −39%。
 

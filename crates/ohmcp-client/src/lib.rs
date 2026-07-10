@@ -18,7 +18,9 @@ use ohmcp_core::{
     InitializeResult, ListToolsResult, MsgType,
 };
 use ohmcp_security::{derive_session_key, hmac_response, EphemeralKeyPair};
-use ohmcp_transport::shm::{decode_shm_ref, recv_fd_blocking, ShmRing, MAX_SHM_CAP};
+use ohmcp_transport::shm::{
+    decode_shm_ref, encode_shm_ref, recv_fd_blocking, ShmRing, MAX_SHM_CAP, SHM_THRESHOLD,
+};
 use ohmcp_transport::{FrameReader, FrameWriter};
 use rand::RngCore;
 use std::os::fd::AsRawFd;
@@ -42,8 +44,10 @@ pub struct OhmcpClient {
     pending: std::sync::Mutex<HashMap<u64, oneshot::Sender<Frame>>>,
     next_id: AtomicU64,
     pipeline: PayloadPipeline,
-    /// 共享内存大 payload 通道（connect_shm 协商成功后启用）。
+    /// 共享内存大 payload 通道（connect_shm 协商成功后启用）：
+    /// 下行环（服务端写 → 本端读）与上行环（本端写 → 服务端读）。
     shm: Option<ShmRing>,
+    shm_up: Option<ShmRing>,
     /// 按请求 id 登记的进度回调（服务端 Progress 通知分发）。
     progress: std::sync::Mutex<HashMap<u64, ProgressCallback>>,
 }
@@ -122,12 +126,19 @@ impl OhmcpClient {
         // 共享内存通道协商（严格顺序阶段，帧读缓冲此时为空，
         // 先收 fd 载荷字节再读结果帧，避免 SCM_RIGHTS 被普通读丢弃）。
         let mut shm = None;
+        let mut shm_up = None;
         if use_shm {
             writer
                 .send(&Frame::new(MsgType::ShmSetup, 0, Bytes::new()))
                 .await
                 .map_err(|e| anyhow!("{e}"))?;
-            let fd = tokio::task::spawn_blocking(move || recv_fd_blocking(raw_fd)).await??;
+            // 服务端依次下发下行环与上行环两个 fd（拒绝时仅一个拒绝字节）。
+            let down_fd = tokio::task::spawn_blocking(move || recv_fd_blocking(raw_fd)).await??;
+            let up_fd = if down_fd.is_some() {
+                tokio::task::spawn_blocking(move || recv_fd_blocking(raw_fd)).await??
+            } else {
+                None
+            };
             let resp = reader
                 .next_frame()
                 .await
@@ -140,8 +151,18 @@ impl OhmcpClient {
                 .get("size")
                 .and_then(serde_json::Value::as_u64)
                 .unwrap_or(0) as usize;
-            if let (true, Some(fd)) = (ok && size > 0 && size <= MAX_SHM_CAP, fd) {
+            let up_size = v
+                .get("up_size")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0) as usize;
+            if let (true, Some(fd)) = (ok && size > 0 && size <= MAX_SHM_CAP, down_fd) {
                 shm = Some(ShmRing::from_fd(fd, size)?);
+            }
+            if let (true, Some(fd)) = (
+                shm.is_some() && up_size > 0 && up_size <= MAX_SHM_CAP,
+                up_fd,
+            ) {
+                shm_up = Some(ShmRing::from_fd(fd, up_size)?);
             }
         }
 
@@ -152,6 +173,7 @@ impl OhmcpClient {
             next_id: AtomicU64::new(1),
             pipeline,
             shm,
+            shm_up,
             progress: std::sync::Mutex::new(HashMap::new()),
         });
 
@@ -191,7 +213,21 @@ impl OhmcpClient {
         cache_key: Option<CacheKey>,
         id: u64,
     ) -> Result<Bytes> {
-        let (frame, _) = self.pipeline.wrap(msg_type, id, payload);
+        // 超阈值请求优先走上行共享内存环（帧内仅 12 字节引用），
+        // 空间不足时回退到常规压缩 + 加密帧。
+        let frame = match &self.shm_up {
+            Some(ring) if payload.len() >= SHM_THRESHOLD => match ring.try_write(&payload) {
+                Some(offset) => {
+                    let body =
+                        Bytes::copy_from_slice(&encode_shm_ref(offset, payload.len() as u32));
+                    let mut f = Frame::new(msg_type, id, body);
+                    f.header.flags.0 |= ohmcp_core::FrameFlags::SHM_REF;
+                    f
+                }
+                None => self.pipeline.wrap(msg_type, id, payload).0,
+            },
+            _ => self.pipeline.wrap(msg_type, id, payload).0,
+        };
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id, tx);
         {
@@ -226,7 +262,8 @@ impl OhmcpClient {
     ) -> Result<CallToolResult> {
         // 参数仅序列化一次：既作缓存键规范形式，又直接拼接进 payload。
         let canonical = serde_json::to_vec(&arguments)?;
-        let key = CacheKey::compute(name, &canonical);
+        // 大参数调用几乎不可能幂等复用，跳过缓存键哈希开销。
+        let key = (canonical.len() < SHM_THRESHOLD).then(|| CacheKey::compute(name, &canonical));
         let mut payload = Vec::with_capacity(canonical.len() + name.len() + 24);
         payload.extend_from_slice(b"{\"name\":");
         serde_json::to_writer(&mut payload, name)?;
@@ -234,7 +271,7 @@ impl OhmcpClient {
         payload.extend_from_slice(&canonical);
         payload.push(b'}');
         let body = self
-            .request_with_cache(MsgType::CallTool, Bytes::from(payload), Some(key))
+            .request_with_cache(MsgType::CallTool, Bytes::from(payload), key)
             .await?;
         Ok(serde_json::from_slice(&body)?)
     }

@@ -345,6 +345,25 @@ async fn main() -> Result<()> {
         ("kb.dump".into(), json!({"doc_id": format!("d{i}")}))
     })));
 
+    // 3d. 大请求上行：~256KiB 参数注入（考验请求方向大 payload 通路；
+    // ohmcp-shm 上下行双向共享内存，套接字两个方向均只走引用）。
+    {
+        const U: usize = 100;
+        let base: Arc<String> = Arc::new("u".repeat(256 * 1024));
+        let b1 = base.clone();
+        all.push(med3!(bench_baseline("upload-256k", U, |i| {
+            ("echo".into(), json!({"msg": format!("{b1}#{i}")}))
+        })));
+        let b2 = base.clone();
+        all.push(med3!(bench_ohmcp("upload-256k", U, |i| {
+            ("echo".into(), json!({"msg": format!("{b2}#{i}")}))
+        })));
+        let b3 = base.clone();
+        all.push(med3!(bench_ohmcp_shm("upload-256k", U, |i| {
+            ("echo".into(), json!({"msg": format!("{b3}#{i}")}))
+        })));
+    }
+
     // 3c. 大 payload 扩展性：16/64/256/1024 KiB，帧内 vs 共享内存通道。
     for kb in [16usize, 64, 256, 1024] {
         let sc = format!("scale-{kb}k");
