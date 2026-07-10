@@ -22,6 +22,10 @@ pub fn jsonrpc_to_frame(v: &Value) -> Result<Frame> {
         "initialize" => (MsgType::Initialize, params),
         "tools/list" => (MsgType::ListTools, params),
         "tools/call" => (MsgType::CallTool, params),
+        "resources/list" => (MsgType::ListResources, params),
+        "resources/read" => (MsgType::ReadResource, params),
+        "prompts/list" => (MsgType::ListPrompts, params),
+        "prompts/get" => (MsgType::GetPrompt, params),
         "ping" => (MsgType::Ping, Value::Null),
         other => return Err(CoreError::Codec(format!("unsupported method {other}"))),
     };
@@ -63,6 +67,20 @@ mod tests {
         assert_eq!(frame.header.request_id, 7);
         let p: Value = serde_json::from_slice(&frame.payload).unwrap();
         assert_eq!(p["name"], "echo");
+    }
+
+    #[test]
+    fn resources_and_prompts_methods_map() {
+        for (method, expected) in [
+            ("resources/list", MsgType::ListResources),
+            ("resources/read", MsgType::ReadResource),
+            ("prompts/list", MsgType::ListPrompts),
+            ("prompts/get", MsgType::GetPrompt),
+        ] {
+            let req = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": {}});
+            let frame = jsonrpc_to_frame(&req).unwrap();
+            assert_eq!(frame.header.msg_type, expected, "{method}");
+        }
     }
 
     #[test]

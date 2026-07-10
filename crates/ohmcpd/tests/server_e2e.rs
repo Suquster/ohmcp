@@ -97,6 +97,43 @@ async fn cacheable_repeat_hits_client_cache() {
 }
 
 #[tokio::test]
+async fn resources_and_prompts_roundtrip() {
+    let sock = sock_path("resprompt");
+    spawn_server(&sock, None).await;
+
+    let c = OhmcpClient::connect(&sock, "agent", None).await.unwrap();
+
+    let rs = c.list_resources().await.unwrap();
+    let uris: Vec<_> = rs.resources.iter().map(|r| r.uri.as_str()).collect();
+    assert!(uris.contains(&"ohmcp://docs/protocol"), "{uris:?}");
+
+    let rd = c.read_resource("ohmcp://docs/protocol").await.unwrap();
+    assert_eq!(rd.contents.len(), 1);
+    assert!(rd.contents[0].text.as_deref().unwrap().contains("ohmcp"));
+
+    // 不存在的资源必须返回错误且会话存活。
+    assert!(c.read_resource("ohmcp://no/such").await.is_err());
+    c.ping().await.unwrap();
+
+    let ps = c.list_prompts().await.unwrap();
+    assert!(ps.prompts.iter().any(|p| p.name == "summarize"));
+
+    let g = c
+        .get_prompt("summarize", json!({"text": "分布式软总线"}))
+        .await
+        .unwrap();
+    assert_eq!(g.messages.len(), 1);
+    match &g.messages[0].content {
+        ohmcp_core::ContentBlock::Text { text } => assert!(text.contains("分布式软总线")),
+        other => panic!("unexpected content: {other:?}"),
+    }
+
+    // 未知提示模板返回错误且会话存活。
+    assert!(c.get_prompt("no.such", json!({})).await.is_err());
+    c.ping().await.unwrap();
+}
+
+#[tokio::test]
 async fn forward_secret_session_encrypts_and_works() {
     let sock = sock_path("fs");
     spawn_server(&sock, Some(b"fs-token".to_vec())).await;

@@ -288,7 +288,7 @@ async fn handle_conn(
                         name: "ohmcpd".to_string(),
                         version: env!("CARGO_PKG_VERSION").to_string(),
                     },
-                    capabilities: json!({"tools": {}}),
+                    capabilities: json!({"tools": {}, "resources": {}, "prompts": {}}),
                 };
                 let (f, _) = pipeline.wrap(
                     MsgType::InitializeResult,
@@ -311,6 +311,111 @@ async fn handle_conn(
                     id,
                     Bytes::from(serde_json::to_vec(&result)?),
                 );
+                writer
+                    .lock()
+                    .await
+                    .send(&f)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+            }
+            MsgType::ListResources => {
+                let result = ohmcp_core::ListResourcesResult {
+                    resources: shared.registry.resources().to_vec(),
+                };
+                let (f, _) = pipeline.wrap(
+                    MsgType::ListResourcesResult,
+                    id,
+                    Bytes::from(serde_json::to_vec(&result)?),
+                );
+                writer
+                    .lock()
+                    .await
+                    .send(&f)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+            }
+            MsgType::ReadResource => {
+                let body = pipeline
+                    .unwrap(&frame)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let params: ohmcp_core::ReadResourceParams = serde_json::from_slice(&body)?;
+                let f = match shared.registry.read_resource(&params.uri) {
+                    Some(contents) => {
+                        let result = ohmcp_core::ReadResourceResult {
+                            contents: vec![contents.clone()],
+                        };
+                        let (f, _) = pipeline.wrap(
+                            MsgType::ReadResourceResult,
+                            id,
+                            Bytes::from(serde_json::to_vec(&result)?),
+                        );
+                        f
+                    }
+                    None => {
+                        let err = ErrorBody {
+                            code: -32002,
+                            message: format!("resource not found: {}", params.uri),
+                            data: None,
+                        };
+                        let (f, _) = pipeline.wrap(
+                            MsgType::Error,
+                            id,
+                            Bytes::from(serde_json::to_vec(&err)?),
+                        );
+                        f
+                    }
+                };
+                writer
+                    .lock()
+                    .await
+                    .send(&f)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+            }
+            MsgType::ListPrompts => {
+                let result = ohmcp_core::ListPromptsResult {
+                    prompts: shared.registry.prompts().to_vec(),
+                };
+                let (f, _) = pipeline.wrap(
+                    MsgType::ListPromptsResult,
+                    id,
+                    Bytes::from(serde_json::to_vec(&result)?),
+                );
+                writer
+                    .lock()
+                    .await
+                    .send(&f)
+                    .await
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+            }
+            MsgType::GetPrompt => {
+                let body = pipeline
+                    .unwrap(&frame)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let params: ohmcp_core::GetPromptParams = serde_json::from_slice(&body)?;
+                let f = match shared.registry.get_prompt(&params.name, &params.arguments) {
+                    Some(result) => {
+                        let (f, _) = pipeline.wrap(
+                            MsgType::GetPromptResult,
+                            id,
+                            Bytes::from(serde_json::to_vec(&result)?),
+                        );
+                        f
+                    }
+                    None => {
+                        let err = ErrorBody {
+                            code: -32602,
+                            message: format!("unknown prompt: {}", params.name),
+                            data: None,
+                        };
+                        let (f, _) = pipeline.wrap(
+                            MsgType::Error,
+                            id,
+                            Bytes::from(serde_json::to_vec(&err)?),
+                        );
+                        f
+                    }
+                };
                 writer
                     .lock()
                     .await

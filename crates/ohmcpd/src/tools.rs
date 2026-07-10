@@ -3,16 +3,24 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use ohmcp_core::{CallToolResult, ContentBlock, Tool};
+use ohmcp_core::{
+    CallToolResult, ContentBlock, GetPromptResult, Prompt, PromptArgument, PromptMessage, Resource,
+    ResourceContents, Tool,
+};
 use serde_json::{json, Value};
 
 pub type ToolHandler = Arc<dyn Fn(&Value) -> CallToolResult + Send + Sync>;
+pub type PromptHandler = Arc<dyn Fn(&Value) -> GetPromptResult + Send + Sync>;
 
 pub struct ToolRegistry {
     tools: Vec<Tool>,
     handlers: HashMap<String, ToolHandler>,
     /// 幂等（可缓存）工具集合。
     cacheable: HashMap<String, bool>,
+    resources: Vec<Resource>,
+    resource_contents: HashMap<String, ResourceContents>,
+    prompts: Vec<Prompt>,
+    prompt_handlers: HashMap<String, PromptHandler>,
 }
 
 impl Default for ToolRegistry {
@@ -27,6 +35,10 @@ impl ToolRegistry {
             tools: Vec::new(),
             handlers: HashMap::new(),
             cacheable: HashMap::new(),
+            resources: Vec::new(),
+            resource_contents: HashMap::new(),
+            prompts: Vec::new(),
+            prompt_handlers: HashMap::new(),
         }
     }
 
@@ -57,6 +69,48 @@ impl ToolRegistry {
 
     pub fn call(&self, name: &str, args: &Value) -> Option<CallToolResult> {
         self.handlers.get(name).map(|h| h(args))
+    }
+
+    /// 登记静态文本资源（MCP resources 语义）。
+    pub fn register_resource(&mut self, uri: &str, name: &str, mime: &str, text: &str) {
+        self.resources.push(Resource {
+            uri: uri.to_string(),
+            name: name.to_string(),
+            description: None,
+            mime_type: Some(mime.to_string()),
+        });
+        self.resource_contents.insert(
+            uri.to_string(),
+            ResourceContents {
+                uri: uri.to_string(),
+                mime_type: Some(mime.to_string()),
+                text: Some(text.to_string()),
+                blob: None,
+            },
+        );
+    }
+
+    pub fn resources(&self) -> &[Resource] {
+        &self.resources
+    }
+
+    pub fn read_resource(&self, uri: &str) -> Option<&ResourceContents> {
+        self.resource_contents.get(uri)
+    }
+
+    /// 登记提示模板（MCP prompts 语义）。
+    pub fn register_prompt(&mut self, prompt: Prompt, handler: PromptHandler) {
+        let name = prompt.name.clone();
+        self.prompts.push(prompt);
+        self.prompt_handlers.insert(name, handler);
+    }
+
+    pub fn prompts(&self) -> &[Prompt] {
+        &self.prompts
+    }
+
+    pub fn get_prompt(&self, name: &str, args: &Value) -> Option<GetPromptResult> {
+        self.prompt_handlers.get(name).map(|h| h(args))
     }
 }
 
@@ -196,6 +250,45 @@ pub fn builtin_registry() -> ToolRegistry {
                 .map(|a| a.iter().filter_map(Value::as_f64).sum())
                 .unwrap_or(0.0);
             text_result(format!("{sum}"))
+        }),
+    );
+
+    // MCP resources：静态只读上下文资源。
+    r.register_resource(
+        "ohmcp://docs/protocol",
+        "协议说明",
+        "text/markdown",
+        "# ohmcp 协议\n二进制帧 + LZ4 压缩 + ChaCha20-Poly1305 加密的原生 MCP 传输。",
+    );
+    r.register_resource(
+        "ohmcp://device/profile",
+        "设备画像",
+        "application/json",
+        r#"{"os":"OpenHarmony","kernel":"linux","arch":"aarch64"}"#,
+    );
+
+    // MCP prompts：带参数插值的提示模板。
+    r.register_prompt(
+        Prompt {
+            name: "summarize".to_string(),
+            description: Some("生成文本摘要指令".to_string()),
+            arguments: vec![PromptArgument {
+                name: "text".to_string(),
+                description: Some("待摘要的原文".to_string()),
+                required: true,
+            }],
+        },
+        Arc::new(|args| {
+            let text = args.get("text").and_then(Value::as_str).unwrap_or("");
+            GetPromptResult {
+                description: Some("摘要指令".to_string()),
+                messages: vec![PromptMessage {
+                    role: "user".to_string(),
+                    content: ContentBlock::Text {
+                        text: format!("请用三句话以内总结以下内容：\n{text}"),
+                    },
+                }],
+            }
         }),
     );
 

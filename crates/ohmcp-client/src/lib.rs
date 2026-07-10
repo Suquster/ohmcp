@@ -223,6 +223,39 @@ impl OhmcpClient {
         Ok(serde_json::from_slice(&body)?)
     }
 
+    pub async fn list_resources(&self) -> Result<ohmcp_core::ListResourcesResult> {
+        let body = self.request(MsgType::ListResources, Bytes::new()).await?;
+        Ok(serde_json::from_slice(&body)?)
+    }
+
+    pub async fn read_resource(&self, uri: &str) -> Result<ohmcp_core::ReadResourceResult> {
+        let params = serde_json::to_vec(&serde_json::json!({ "uri": uri }))?;
+        let body = self
+            .request(MsgType::ReadResource, Bytes::from(params))
+            .await?;
+        Ok(serde_json::from_slice(&body)?)
+    }
+
+    pub async fn list_prompts(&self) -> Result<ohmcp_core::ListPromptsResult> {
+        let body = self.request(MsgType::ListPrompts, Bytes::new()).await?;
+        Ok(serde_json::from_slice(&body)?)
+    }
+
+    pub async fn get_prompt(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+    ) -> Result<ohmcp_core::GetPromptResult> {
+        let params = serde_json::to_vec(&serde_json::json!({
+            "name": name,
+            "arguments": arguments,
+        }))?;
+        let body = self
+            .request(MsgType::GetPrompt, Bytes::from(params))
+            .await?;
+        Ok(serde_json::from_slice(&body)?)
+    }
+
     pub async fn ping(&self) -> Result<()> {
         self.request(MsgType::Ping, Bytes::new()).await?;
         Ok(())
