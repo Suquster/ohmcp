@@ -1,7 +1,7 @@
 //! 端到端多 Agent 演示：单个 ohmcpd 守护进程 + 三个并发 Agent。
 //!
 //! 展示：认证握手（令牌不过网）、单守护进程多 Agent 复用、工具调用、
-//! 内容寻址缓存命中（CACHE_REF）、加密信道、错误处理。
+//! 内容寻址缓存命中（CACHE_REF）、加密信道、资源订阅更新推送、错误处理。
 //!
 //! 运行：`cargo run --release -p ohmcp-bench --bin demo`
 
@@ -17,14 +17,9 @@ const TOKEN: &[u8] = b"demo-shared-token";
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt().init();
-    tokio::spawn(async move {
-        ohmcpd::server::run(
-            SOCK,
-            Some(TOKEN.to_vec()),
-            ohmcpd::tools::builtin_registry(),
-        )
-        .await
-    });
+    let registry = ohmcpd::tools::builtin_registry();
+    let updater = registry.updater();
+    tokio::spawn(async move { ohmcpd::server::run(SOCK, Some(TOKEN.to_vec()), registry).await });
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     println!("=== ohmcp 多 Agent 演示（认证 + 加密开启） ===\n");
@@ -102,6 +97,27 @@ async fn main() -> Result<()> {
         t2.elapsed()
     );
 
+    // 资源订阅：doc-agent 订阅协议文档，服务端更新后推送 ResourceUpdated。
+    let (utx, mut urx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    d.on_resource_updated(move |uri| {
+        let _ = utx.send(uri);
+    });
+    d.subscribe_resource("ohmcp://docs/protocol").await?;
+    updater.update("ohmcp://docs/protocol", "协议文档已更新（v2）");
+    let updated_uri = loop {
+        if let Ok(u) = urx.try_recv() {
+            break u;
+        }
+        d.ping().await?;
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    println!("[doc-agent] 收到资源更新推送: {updated_uri}");
+    let rd = d.read_resource(&updated_uri).await?;
+    println!(
+        "[doc-agent] 重读更新后内容: {}\n",
+        rd.contents[0].text.as_deref().unwrap_or_default()
+    );
+
     // 错误处理：调用不存在的工具。
     match c.call_tool("fs.delete_all", json!({})).await {
         Err(e) => println!("[calc-agent] 越界调用被拒: {e}"),
@@ -114,6 +130,6 @@ async fn main() -> Result<()> {
         Ok(_) => unreachable!(),
     }
 
-    println!("\n=== 演示完成：多 Agent 复用单守护进程，全程加密，缓存生效 ===");
+    println!("\n=== 演示完成：多 Agent 复用单守护进程，全程加密，缓存/订阅生效 ===");
     Ok(())
 }

@@ -58,10 +58,12 @@ cargo run --release -p ohmcp-bench --bin demo   # 端到端多 Agent 演示
 [system-scheduler] device.status: {"content":[{"type":"text","text":"{\"battery\":87,...}"}]}
 [calc-agent] math.sum: {"content":[{"type":"text","text":"100"}]}
 [doc-agent] kb.dump 经共享内存通道: 65959 字节结果, 320µs（套接字仅 12 字节引用）
+[doc-agent] 收到资源更新推送: ohmcp://docs/protocol
+[doc-agent] 重读更新后内容: 协议文档已更新（v2）
 [calc-agent] 越界调用被拒: server error: {"code":-32601,"message":"unknown tool: fs.delete_all"}
 [rogue-agent] 错误令牌被拒: auth failed: Some("invalid token")
 
-=== 演示完成：多 Agent 复用单守护进程，全程加密，缓存生效 ===
+=== 演示完成：多 Agent 复用单守护进程，全程加密，缓存/订阅生效 ===
 ```
 
 ## 快速开始
