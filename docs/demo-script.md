@@ -13,10 +13,10 @@
 
 ```bash
 git clone https://www.gitlink.org.cn/Taoyouce/ohmcp.git && cd ohmcp
-cargo test --workspace        # 39 单元 + 8 端到端集成，47 项全绿
+cargo test --workspace        # 42 单元 + 17 端到端集成，59 项全绿
 ```
 
-- 旁白：全部 Rust 原创实现，47 项测试覆盖帧编解码、对抗性解码（篡改/截断/
+- 旁白：全部 Rust 原创实现，59 项测试覆盖帧编解码、对抗性解码（篡改/截断/
   fuzz 不 panic）、加解密、缓存、共享内存通道并发正确性、软总线 Session 适配。
 
 ## 镜头 3（0:50–1:30）：多 Agent 端到端演示
