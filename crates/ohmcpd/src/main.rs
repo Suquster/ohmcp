@@ -11,6 +11,11 @@
 use anyhow::Result;
 use ohmcpd::{server, tools};
 
+// mimalloc 全局分配器：协议栈热路径（帧/压缩/加密缓冲）分配密集，
+// 线程本地堆显著降低多核下的分配器争用。
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 fn parse_arg(args: &[String], name: &str) -> Option<String> {
     args.iter()
         .position(|a| a == name)
