@@ -113,10 +113,13 @@ payload ≥ 512B 时尝试 LZ4（`compress_prepend_size`），仅在确有收益
 客户端生成随机 nonce，发送 `HMAC-SHA256(token, nonce)`；服务端以同一预共享
 令牌常数时间验证。明文令牌从不出现在信道上。
 
-### 6.2 会话加密
+### 6.2 会话加密（前向保密）
 
-认证通过后双方以 `HMAC(token, "ohmcp-session" ‖ nonce)` 派生 32 字节会话密钥，
-启用 ChaCha20-Poly1305 AEAD：
+认证握手中双方交换 X25519 临时公钥，会话密钥派生为
+`HMAC(token, "ohmcp-fs" ‖ nonce ‖ ECDH 共享秘密)`；临时私钥握手后即销毁，
+因此即使预共享令牌事后泄露，历史流量也无法解密（前向保密）。
+对端未携带临时公钥时回退 `HMAC(token, "ohmcp-session" ‖ nonce)`。
+随后启用 ChaCha20-Poly1305 AEAD：
 
 - nonce = 4 字节随机会话前缀 ‖ 8 字节单调计数器（会话内唯一，免除每消息 CSPRNG）；
 - 帧头摘要（msgtype ‖ request_id）作为 AAD——篡改消息类型或请求号即解密失败。
@@ -124,6 +127,12 @@ payload ≥ 512B 时尝试 LZ4（`compress_prepend_size`），仅在确有收益
 ### 6.3 访问控制
 
 `ToolAcl` 维护 agent → 工具白名单，`CallTool` 逐次检查；未认证连接只允许 `Auth`。
+
+### 6.4 运维与供应链
+
+- 优雅停机：SIGTERM/Ctrl-C 后停止监听、通知在飞会话收尾（宽限期内）并清理 socket；
+- 连接数上限（`--max-conns`，默认 256）：超限连接收 -32005 后关闭，限制 DoS 面；
+- 供应链审计：cargo-deny（漏洞通告/版本禁用/许可证/源验证）接入 CI 持续门禁。
 
 ## 7. 性能设计要点汇总
 

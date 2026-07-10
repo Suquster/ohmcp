@@ -13,7 +13,7 @@
 | 帧格式 | `ohmcp-core` | OHMF 二进制帧：17 字节定长头（magic/版本/标志/类型/request_id/长度），替代 JSON-RPC 文本信封 |
 | 传输 | `ohmcp-transport` | Unix Domain Socket 帧化读写；写路径批量聚合减少 syscall，读路径增量零拷贝解码；可选共享内存大 payload 通道（memfd 环形缓冲 + SCM_RIGHTS fd 传递，零套接字拷贝）；DSoftBus Session 适配 PoC（softbus.rs） |
 | 上下文优化 | `ohmcp-cache` | LZ4 透明压缩（512B 阈值）；内容寻址结果缓存 `sha256(tool ‖ args)`，命中时仅回传 32 字节 CACHE_REF |
-| 安全 | `ohmcp-security` | HMAC-SHA256 挑战应答认证（令牌不过网）；会话级 ChaCha20-Poly1305 AEAD（帧头入 AAD 防篡改）；工具粒度 ACL |
+| 安全 | `ohmcp-security` | HMAC-SHA256 挑战应答认证（令牌不过网）；X25519 临时密钥交换（前向保密）；会话级 ChaCha20-Poly1305 AEAD（帧头入 AAD 防篡改）；工具粒度 ACL |
 | 服务端 | `ohmcpd` | 用户态守护进程，每连接异步任务，共享工具注册表与服务端缓存 |
 | 客户端 | `ohmcp-client` | 单连接多路复用；“机会主义内联读”分发（顺序调用零任务切换，并发调用自动复用） |
 | 测试 | `ohmcp-bench` | 与 JSON-RPC 基线（对齐官方 SDK 传输语义）的六场景对比基准 |
@@ -86,7 +86,7 @@ let result = c.call_tool("kb.search", serde_json::json!({"query": "鸿蒙", "top
 ## 测试
 
 ```bash
-cargo test --workspace                     # 39 单元 + 8 端到端集成测试，47 项全绿（行覆盖率 88.8%）
+cargo test --workspace                     # 42 单元 + 12 端到端集成测试，54 项全绿
 cargo clippy --workspace --all-targets -- -D warnings   # 零警告（CI 强制）
 ```
 
