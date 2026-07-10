@@ -33,6 +33,46 @@ pub fn derive_session_key(token: &[u8], nonce: &[u8]) -> [u8; 32] {
     mac.finalize().into_bytes().into()
 }
 
+/// X25519 临时密钥对：为每个会话提供前向保密。
+///
+/// 双方在认证握手中交换临时公钥，会话密钥掺入 ECDH 共享秘密：
+/// `HMAC(token, "ohmcp-fs" || nonce || dh_shared)`。即使预共享令牌
+/// 事后泄露，历史流量也无法解密（临时私钥握手后即销毁）。
+pub struct EphemeralKeyPair {
+    secret: x25519_dalek::EphemeralSecret,
+    public: x25519_dalek::PublicKey,
+}
+
+impl EphemeralKeyPair {
+    /// 生成新的临时密钥对（私钥仅存活至 `derive` 被调用）。
+    pub fn generate() -> Self {
+        let secret = x25519_dalek::EphemeralSecret::random_from_rng(rand::rngs::OsRng);
+        let public = x25519_dalek::PublicKey::from(&secret);
+        Self { secret, public }
+    }
+
+    /// 本方临时公钥（32 字节，随认证消息明文传输）。
+    pub fn public_bytes(&self) -> [u8; 32] {
+        self.public.to_bytes()
+    }
+
+    /// 消费私钥，与对方临时公钥完成 ECDH 并派生前向保密会话密钥。
+    pub fn derive_fs_session_key(
+        self,
+        peer_public: &[u8; 32],
+        token: &[u8],
+        nonce: &[u8],
+    ) -> [u8; 32] {
+        let peer = x25519_dalek::PublicKey::from(*peer_public);
+        let shared = self.secret.diffie_hellman(&peer);
+        let mut mac = HmacSha256::new_from_slice(token).expect("hmac accepts any key length");
+        mac.update(b"ohmcp-fs");
+        mac.update(nonce);
+        mac.update(shared.as_bytes());
+        mac.finalize().into_bytes().into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -47,6 +87,28 @@ mod tests {
     fn wrong_token_rejected() {
         let r = hmac_response(b"attacker", b"nonce1");
         assert!(!verify_response(b"secret", b"nonce1", &r));
+    }
+
+    #[test]
+    fn fs_key_agreement_matches_both_sides() {
+        let a = EphemeralKeyPair::generate();
+        let b = EphemeralKeyPair::generate();
+        let a_pub = a.public_bytes();
+        let b_pub = b.public_bytes();
+        let ka = a.derive_fs_session_key(&b_pub, b"token", b"nonce");
+        let kb = b.derive_fs_session_key(&a_pub, b"token", b"nonce");
+        assert_eq!(ka, kb);
+    }
+
+    #[test]
+    fn fs_keys_differ_per_session() {
+        let mk = || {
+            let a = EphemeralKeyPair::generate();
+            let b = EphemeralKeyPair::generate();
+            let b_pub = b.public_bytes();
+            a.derive_fs_session_key(&b_pub, b"token", b"nonce")
+        };
+        assert_ne!(mk(), mk(), "ephemeral keys must yield unique session keys");
     }
 
     #[test]

@@ -14,7 +14,7 @@ use ohmcp_core::{
     AuthParams, AuthResult, CallToolParams, ErrorBody, Frame, Implementation, InitializeResult,
     ListToolsResult, MsgType,
 };
-use ohmcp_security::{derive_session_key, verify_response, ToolAcl};
+use ohmcp_security::{derive_session_key, verify_response, EphemeralKeyPair, ToolAcl};
 use ohmcp_transport::shm::{
     encode_shm_ref, send_fd_blocking, send_fd_decline, ShmRing, DEFAULT_SHM_CAP,
 };
@@ -188,6 +188,14 @@ async fn handle_conn(
                     }
                     _ => false,
                 };
+                // 前向保密：客户端携带临时公钥时生成服务端临时密钥对，
+                // 会话密钥掺入 ECDH 共享秘密；无公钥时回退令牌派生。
+                let client_pub = params.eph_pub.as_deref().and_then(unhex32);
+                let eph = if ok && client_pub.is_some() {
+                    Some(EphemeralKeyPair::generate())
+                } else {
+                    None
+                };
                 let result = AuthResult {
                     ok,
                     session_key_b64: None,
@@ -196,6 +204,7 @@ async fn handle_conn(
                     } else {
                         Some("invalid token".into())
                     },
+                    eph_pub: eph.as_ref().map(|e| hex(&e.public_bytes())),
                 };
                 let payload = Bytes::from(serde_json::to_vec(&result)?);
                 writer
@@ -207,10 +216,12 @@ async fn handle_conn(
                 if ok {
                     authenticated = true;
                     agent_id = params.agent_id.clone();
-                    let key = derive_session_key(
-                        shared.token.as_ref().unwrap(),
-                        params.nonce.as_ref().unwrap().as_bytes(),
-                    );
+                    let token = shared.token.as_ref().unwrap();
+                    let nonce = params.nonce.as_ref().unwrap().as_bytes();
+                    let key = match (eph, client_pub) {
+                        (Some(eph), Some(peer)) => eph.derive_fs_session_key(&peer, token, nonce),
+                        _ => derive_session_key(token, nonce),
+                    };
                     pipeline.enable_encryption(key);
                     shared.acl.lock().unwrap().grant_all(&agent_id);
                     info!(agent = %agent_id, "agent authenticated");
@@ -435,6 +446,27 @@ fn wrap_maybe_shm(
     }
     let (f, _) = pipeline.wrap(MsgType::CallToolResult, id, payload);
     f
+}
+
+fn hex(data: &[u8]) -> String {
+    use std::fmt::Write;
+    data.iter()
+        .fold(String::with_capacity(data.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
+}
+
+/// 解码 32 字节 hex 公钥；长度或字符非法时返回 None。
+fn unhex32(s: &str) -> Option<[u8; 32]> {
+    if s.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, chunk) in out.iter_mut().enumerate() {
+        *chunk = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
 }
 
 fn unhex(s: &str) -> Option<Vec<u8>> {

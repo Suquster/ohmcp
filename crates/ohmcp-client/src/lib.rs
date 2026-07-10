@@ -17,7 +17,7 @@ use ohmcp_core::{
     AuthParams, AuthResult, CallToolResult, Frame, Implementation, InitializeParams,
     InitializeResult, ListToolsResult, MsgType,
 };
-use ohmcp_security::{derive_session_key, hmac_response};
+use ohmcp_security::{derive_session_key, hmac_response, EphemeralKeyPair};
 use ohmcp_transport::shm::{decode_shm_ref, recv_fd_blocking, ShmRing, MAX_SHM_CAP};
 use ohmcp_transport::{FrameReader, FrameWriter};
 use rand::RngCore;
@@ -85,10 +85,12 @@ impl OhmcpClient {
             rand::thread_rng().fill_bytes(&mut nonce);
             let nonce_hex = hex(&nonce);
             let response = hmac_response(token, nonce_hex.as_bytes());
+            let eph = EphemeralKeyPair::generate();
             let params = AuthParams {
                 agent_id: agent_id.to_string(),
                 token: hex(&response),
                 nonce: Some(nonce_hex.clone()),
+                eph_pub: Some(hex(&eph.public_bytes())),
             };
             let frame = Frame::new(MsgType::Auth, 0, Bytes::from(serde_json::to_vec(&params)?));
             writer.send(&frame).await.map_err(|e| anyhow!("{e}"))?;
@@ -101,7 +103,14 @@ impl OhmcpClient {
             if !result.ok {
                 return Err(anyhow!("auth failed: {:?}", result.reason));
             }
-            let key = derive_session_key(token, nonce_hex.as_bytes());
+            // 前向保密：服务端回传临时公钥时掺入 ECDH 共享秘密；
+            // 旧版服务端未回传时回退到仅基于令牌的派生。
+            let key = match result.eph_pub.as_deref().and_then(unhex32) {
+                Some(server_pub) => {
+                    eph.derive_fs_session_key(&server_pub, token, nonce_hex.as_bytes())
+                }
+                None => derive_session_key(token, nonce_hex.as_bytes()),
+            };
             pipeline.enable_encryption(key);
         }
 
@@ -306,6 +315,18 @@ pub(crate) fn hex(data: &[u8]) -> String {
             let _ = write!(s, "{b:02x}");
             s
         })
+}
+
+/// 解码 32 字节 hex 公钥；长度或字符非法时返回 None。
+fn unhex32(s: &str) -> Option<[u8; 32]> {
+    if s.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, chunk) in out.iter_mut().enumerate() {
+        *chunk = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
 }
 
 // 供 pipeline 使用的共享缓存类型别名。

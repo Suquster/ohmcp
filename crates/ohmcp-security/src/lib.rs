@@ -11,7 +11,7 @@ pub mod auth;
 pub mod crypto;
 
 pub use acl::ToolAcl;
-pub use auth::{derive_session_key, hmac_response, verify_response};
+pub use auth::{derive_session_key, hmac_response, verify_response, EphemeralKeyPair};
 pub use crypto::{decrypt, encrypt, SessionCipher};
 
 use thiserror::Error;

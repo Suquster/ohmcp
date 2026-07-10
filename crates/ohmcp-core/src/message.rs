@@ -86,6 +86,9 @@ pub struct AuthParams {
     pub token: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nonce: Option<String>,
+    /// 客户端 X25519 临时公钥（hex，32 字节）：启用前向保密。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eph_pub: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,4 +98,7 @@ pub struct AuthResult {
     pub session_key_b64: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// 服务端 X25519 临时公钥（hex）：与客户端公钥完成 ECDH。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eph_pub: Option<String>,
 }

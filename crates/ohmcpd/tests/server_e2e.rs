@@ -97,6 +97,21 @@ async fn cacheable_repeat_hits_client_cache() {
 }
 
 #[tokio::test]
+async fn forward_secret_session_encrypts_and_works() {
+    let sock = sock_path("fs");
+    spawn_server(&sock, Some(b"fs-token".to_vec())).await;
+
+    // 认证握手交换 X25519 临时公钥；若双方派生密钥不一致，
+    // 后续加密帧将解密失败，调用不可能成功。
+    let c = OhmcpClient::connect(&sock, "agent", Some(b"fs-token"))
+        .await
+        .unwrap();
+    let r = c.call_tool("echo", json!({"text": "pfs"})).await.unwrap();
+    assert!(serde_json::to_string(&r).unwrap().contains("pfs"));
+    c.ping().await.unwrap();
+}
+
+#[tokio::test]
 async fn connection_limit_rejects_excess_clients() {
     let sock = sock_path("connlimit");
     let _ = std::fs::remove_file(&sock);
