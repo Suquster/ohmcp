@@ -12,16 +12,23 @@ use serde_json::{json, Value};
 pub type ToolHandler = Arc<dyn Fn(&Value) -> CallToolResult + Send + Sync>;
 pub type PromptHandler = Arc<dyn Fn(&Value) -> GetPromptResult + Send + Sync>;
 
+/// 资源事件：内容更新（面向已订阅会话）或列表变更（面向全体会话）。
+#[derive(Debug, Clone)]
+pub enum ResourceEvent {
+    Updated(String),
+    ListChanged,
+}
+
 pub struct ToolRegistry {
     tools: Vec<Tool>,
     handlers: HashMap<String, ToolHandler>,
     /// 幂等（可缓存）工具集合。
     cacheable: HashMap<String, bool>,
-    resources: Vec<Resource>,
+    resources: Arc<RwLock<Vec<Resource>>>,
     resource_contents: Arc<RwLock<HashMap<String, ResourceContents>>>,
-    /// 资源更新事件（uri）广播：会话据此向已订阅客户端推送
-    /// ResourceUpdated 通知。
-    resource_events: tokio::sync::broadcast::Sender<String>,
+    /// 资源事件广播：会话据此向客户端推送 ResourceUpdated /
+    /// ResourceListChanged 通知。
+    resource_events: tokio::sync::broadcast::Sender<ResourceEvent>,
     prompts: Vec<Prompt>,
     prompt_handlers: HashMap<String, PromptHandler>,
 }
@@ -38,7 +45,7 @@ impl ToolRegistry {
             tools: Vec::new(),
             handlers: HashMap::new(),
             cacheable: HashMap::new(),
-            resources: Vec::new(),
+            resources: Arc::new(RwLock::new(Vec::new())),
             resource_contents: Arc::new(RwLock::new(HashMap::new())),
             resource_events: tokio::sync::broadcast::channel(64).0,
             prompts: Vec::new(),
@@ -77,7 +84,7 @@ impl ToolRegistry {
 
     /// 登记静态文本资源（MCP resources 语义）。
     pub fn register_resource(&mut self, uri: &str, name: &str, mime: &str, text: &str) {
-        self.resources.push(Resource {
+        self.resources.write().unwrap().push(Resource {
             uri: uri.to_string(),
             name: name.to_string(),
             description: None,
@@ -94,8 +101,8 @@ impl ToolRegistry {
         );
     }
 
-    pub fn resources(&self) -> &[Resource] {
-        &self.resources
+    pub fn resources(&self) -> Vec<Resource> {
+        self.resources.read().unwrap().clone()
     }
 
     pub fn read_resource(&self, uri: &str) -> Option<ResourceContents> {
@@ -113,14 +120,16 @@ impl ToolRegistry {
             Some(c) => {
                 c.text = Some(text.to_string());
                 drop(map);
-                let _ = self.resource_events.send(uri.to_string());
+                let _ = self
+                    .resource_events
+                    .send(ResourceEvent::Updated(uri.to_string()));
                 true
             }
             None => false,
         }
     }
 
-    pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<String> {
+    pub fn subscribe_events(&self) -> tokio::sync::broadcast::Receiver<ResourceEvent> {
         self.resource_events.subscribe()
     }
 
@@ -128,6 +137,7 @@ impl ToolRegistry {
     /// 据此更新资源内容并触发订阅通知。
     pub fn updater(&self) -> ResourceUpdater {
         ResourceUpdater {
+            resources: Arc::clone(&self.resources),
             contents: Arc::clone(&self.resource_contents),
             events: self.resource_events.clone(),
         }
@@ -152,8 +162,9 @@ impl ToolRegistry {
 /// 资源更新句柄：与注册表共享资源内容与事件广播端。
 #[derive(Clone)]
 pub struct ResourceUpdater {
+    resources: Arc<RwLock<Vec<Resource>>>,
     contents: Arc<RwLock<HashMap<String, ResourceContents>>>,
-    events: tokio::sync::broadcast::Sender<String>,
+    events: tokio::sync::broadcast::Sender<ResourceEvent>,
 }
 
 impl ResourceUpdater {
@@ -164,11 +175,31 @@ impl ResourceUpdater {
             Some(c) => {
                 c.text = Some(text.to_string());
                 drop(map);
-                let _ = self.events.send(uri.to_string());
+                let _ = self.events.send(ResourceEvent::Updated(uri.to_string()));
                 true
             }
             None => false,
         }
+    }
+
+    /// 运行时新增资源并广播列表变更事件（resources/list_changed 语义）。
+    pub fn add_resource(&self, uri: &str, name: &str, mime: &str, text: &str) {
+        self.resources.write().unwrap().push(Resource {
+            uri: uri.to_string(),
+            name: name.to_string(),
+            description: None,
+            mime_type: Some(mime.to_string()),
+        });
+        self.contents.write().unwrap().insert(
+            uri.to_string(),
+            ResourceContents {
+                uri: uri.to_string(),
+                mime_type: Some(mime.to_string()),
+                text: Some(text.to_string()),
+                blob: None,
+            },
+        );
+        let _ = self.events.send(ResourceEvent::ListChanged);
     }
 }
 

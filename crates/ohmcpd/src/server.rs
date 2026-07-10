@@ -194,18 +194,32 @@ async fn handle_conn(
                             break 'session;
                         }
                         evt = resource_events.recv() => {
-                            if let Ok(uri) = evt {
-                                if subscribed.contains(&uri) {
+                            let f = match evt {
+                                Ok(crate::tools::ResourceEvent::Updated(uri))
+                                    if subscribed.contains(&uri) =>
+                                {
                                     let params = ohmcp_core::ResourceUpdatedParams { uri };
                                     let (f, _) = pipeline.wrap(
                                         MsgType::ResourceUpdated,
                                         0,
                                         Bytes::from(serde_json::to_vec(&params)?),
                                     );
-                                    let mut w = writer.lock().await;
-                                    w.queue(&f);
-                                    w.flush().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+                                    Some(f)
                                 }
+                                Ok(crate::tools::ResourceEvent::ListChanged) if authenticated => {
+                                    let (f, _) = pipeline.wrap(
+                                        MsgType::ResourceListChanged,
+                                        0,
+                                        Bytes::from_static(b"{}"),
+                                    );
+                                    Some(f)
+                                }
+                                _ => None,
+                            };
+                            if let Some(f) = f {
+                                let mut w = writer.lock().await;
+                                w.queue(&f);
+                                w.flush().await.map_err(|e| anyhow::anyhow!("{e}"))?;
                             }
                         }
                     }
@@ -364,7 +378,7 @@ async fn handle_conn(
             }
             MsgType::ListResources => {
                 let result = ohmcp_core::ListResourcesResult {
-                    resources: shared.registry.resources().to_vec(),
+                    resources: shared.registry.resources(),
                 };
                 let (f, _) = pipeline.wrap(
                     MsgType::ListResourcesResult,

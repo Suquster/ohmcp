@@ -55,6 +55,8 @@ pub struct OhmcpClient {
     progress: std::sync::Mutex<HashMap<u64, ProgressCallback>>,
     /// 资源更新通知回调（ResourceUpdated 通知分发）。
     resource_updated: std::sync::Mutex<Option<ResourceUpdatedCallback>>,
+    /// 资源列表变更通知回调（ResourceListChanged 通知分发）。
+    resource_list_changed: std::sync::Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 impl OhmcpClient {
@@ -181,6 +183,7 @@ impl OhmcpClient {
             shm_up,
             progress: std::sync::Mutex::new(HashMap::new()),
             resource_updated: std::sync::Mutex::new(None),
+            resource_list_changed: std::sync::Mutex::new(None),
         });
 
         // initialize 握手。
@@ -375,6 +378,11 @@ impl OhmcpClient {
         *self.resource_updated.lock().unwrap() = Some(Box::new(cb));
     }
 
+    /// 登记资源列表变更回调（resources/list_changed 语义）。
+    pub fn on_resource_list_changed(&self, cb: impl Fn() + Send + Sync + 'static) {
+        *self.resource_list_changed.lock().unwrap() = Some(Box::new(cb));
+    }
+
     pub async fn list_prompts(&self) -> Result<ohmcp_core::ListPromptsResult> {
         let body = self.request(MsgType::ListPrompts, Bytes::new()).await?;
         Ok(serde_json::from_slice(&body)?)
@@ -454,6 +462,12 @@ impl OhmcpClient {
                                         cb(p);
                                     }
                                 }
+                            }
+                            continue;
+                        }
+                        if frame.header.msg_type == MsgType::ResourceListChanged {
+                            if let Some(cb) = self.resource_list_changed.lock().unwrap().as_ref() {
+                                cb();
                             }
                             continue;
                         }

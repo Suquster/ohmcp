@@ -254,6 +254,48 @@ async fn resource_subscription_delivers_updates() {
 }
 
 #[tokio::test]
+async fn resource_list_changed_notifies_clients() {
+    let sock = sock_path("listchanged");
+    let _ = std::fs::remove_file(&sock);
+    let registry = ohmcpd::tools::builtin_registry();
+    let updater = registry.updater();
+    {
+        let sock = sock.clone();
+        tokio::spawn(async move { ohmcpd::server::run(&sock, None, registry).await });
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let c = OhmcpClient::connect(&sock, "agent", None).await.unwrap();
+    let before = c.list_resources().await.unwrap().resources.len();
+    let notified = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = notified.clone();
+    c.on_resource_list_changed(move || {
+        flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+
+    // 运行时新增资源：全体客户端收到 ResourceListChanged 通知。
+    updater.add_resource("ohmcp://docs/changelog", "变更日志", "text/plain", "v0.1.0");
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        while !notified.load(std::sync::atomic::Ordering::SeqCst) {
+            c.ping().await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("list_changed must be delivered");
+
+    let rs = c.list_resources().await.unwrap();
+    assert_eq!(rs.resources.len(), before + 1);
+    assert!(rs
+        .resources
+        .iter()
+        .any(|r| r.uri == "ohmcp://docs/changelog"));
+    let rd = c.read_resource("ohmcp://docs/changelog").await.unwrap();
+    assert_eq!(rd.contents[0].text.as_deref(), Some("v0.1.0"));
+}
+
+#[tokio::test]
 async fn forward_secret_session_encrypts_and_works() {
     let sock = sock_path("fs");
     spawn_server(&sock, Some(b"fs-token".to_vec())).await;

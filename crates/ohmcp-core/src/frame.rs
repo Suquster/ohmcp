@@ -89,6 +89,8 @@ pub enum MsgType {
     UnsubscribeResource = 0x19,
     /// 资源更新通知（服务端 → 已订阅客户端，无响应）。
     ResourceUpdated = 0x1A,
+    /// 资源列表变更通知（服务端 → 客户端，无响应）。
+    ResourceListChanged = 0x1B,
     Error = 0x7F,
 }
 
@@ -121,6 +123,7 @@ impl MsgType {
             0x18 => MsgType::SubscribeResourceResult,
             0x19 => MsgType::UnsubscribeResource,
             0x1A => MsgType::ResourceUpdated,
+            0x1B => MsgType::ResourceListChanged,
             0x7F => MsgType::Error,
             other => return Err(CoreError::Codec(format!("unknown msg type {other:#x}"))),
         })
