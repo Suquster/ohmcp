@@ -5,7 +5,7 @@
 //!
 //! 用法：
 //! ```text
-//! ohmcpd --socket /tmp/ohmcpd.sock [--token <hex-or-utf8-token>]
+//! ohmcpd --socket /tmp/ohmcpd.sock [--token <hex-or-utf8-token>] [--max-conns N]
 //! ```
 
 use anyhow::Result;
@@ -24,6 +24,27 @@ async fn main() -> Result<()> {
     let socket = parse_arg(&args, "--socket")
         .unwrap_or_else(|| ohmcp_transport::DEFAULT_SOCKET_PATH.to_string());
     let token = parse_arg(&args, "--token");
+    let mut config = server::ServerConfig::default();
+    if let Some(n) = parse_arg(&args, "--max-conns").and_then(|v| v.parse().ok()) {
+        config.max_connections = n;
+    }
     let registry = tools::builtin_registry();
-    server::run(&socket, token.map(|t| t.into_bytes()), registry).await
+    server::run_with(
+        &socket,
+        token.map(|t| t.into_bytes()),
+        registry,
+        config,
+        shutdown_signal(),
+    )
+    .await
+}
+
+/// 等待 SIGTERM 或 Ctrl-C，触发优雅停机。
+async fn shutdown_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut term = signal(SignalKind::terminate()).expect("install SIGTERM handler");
+    tokio::select! {
+        _ = term.recv() => {}
+        _ = tokio::signal::ctrl_c() => {}
+    }
 }

@@ -21,7 +21,8 @@ use ohmcp_transport::shm::{
 use ohmcp_transport::{FrameReader, FrameWriter};
 use serde_json::json;
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::task::JoinSet;
 use tracing::{info, warn};
 
 use crate::tools::ToolRegistry;
@@ -33,12 +34,50 @@ pub struct Shared {
     pub token: Option<Vec<u8>>,
 }
 
+/// 服务端运维配置：连接数上限与优雅停机宽限期。
+#[derive(Clone, Copy, Debug)]
+pub struct ServerConfig {
+    /// 并发连接数上限；超出后新连接收到 -32005 错误帧并被关闭。
+    pub max_connections: usize,
+    /// 收到停机信号后等待在飞连接收尾的宽限期。
+    pub shutdown_grace: Duration,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            max_connections: 256,
+            shutdown_grace: Duration::from_secs(5),
+        }
+    }
+}
+
 pub async fn run(socket_path: &str, token: Option<Vec<u8>>, registry: ToolRegistry) -> Result<()> {
+    run_with(
+        socket_path,
+        token,
+        registry,
+        ServerConfig::default(),
+        std::future::pending::<()>(),
+    )
+    .await
+}
+
+/// 带运维配置与停机信号的服务主循环：`shutdown` 完成后停止接受
+/// 新连接、通知在飞会话关闭，并在宽限期内等待其收尾。
+pub async fn run_with(
+    socket_path: &str,
+    token: Option<Vec<u8>>,
+    registry: ToolRegistry,
+    config: ServerConfig,
+    shutdown: impl std::future::Future<Output = ()>,
+) -> Result<()> {
     let _ = std::fs::remove_file(socket_path);
     let listener = UnixListener::bind(socket_path)?;
     info!(
         socket = socket_path,
         auth = token.is_some(),
+        max_conns = config.max_connections,
         "ohmcpd listening"
     );
     let mut acl = ToolAcl::new();
@@ -51,21 +90,70 @@ pub async fn run(socket_path: &str, token: Option<Vec<u8>>, registry: ToolRegist
         acl: std::sync::Mutex::new(acl),
         token,
     });
+    let limiter = Arc::new(Semaphore::new(config.max_connections));
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let mut conns: JoinSet<()> = JoinSet::new();
+    tokio::pin!(shutdown);
     loop {
-        let (stream, _) = listener.accept().await?;
-        let shared = shared.clone();
-        tokio::spawn(async move {
-            if let Err(e) = handle_conn(stream, shared).await {
-                warn!("connection error: {e}");
+        tokio::select! {
+            _ = &mut shutdown => break,
+            accepted = listener.accept() => {
+                let (stream, _) = accepted?;
+                let permit = match limiter.clone().try_acquire_owned() {
+                    Ok(p) => p,
+                    Err(_) => {
+                        warn!(max = config.max_connections, "connection limit reached, rejecting");
+                        tokio::spawn(reject_busy(stream));
+                        continue;
+                    }
+                };
+                let shared = shared.clone();
+                let rx = shutdown_rx.clone();
+                conns.spawn(async move {
+                    if let Err(e) = handle_conn(stream, shared, rx, permit).await {
+                        warn!("connection error: {e}");
+                    }
+                });
             }
-        });
+        }
+    }
+    // 优雅停机：停止监听、通知在飞会话，宽限期内等待收尾。
+    drop(listener);
+    let _ = std::fs::remove_file(socket_path);
+    let _ = shutdown_tx.send(true);
+    let drained = tokio::time::timeout(config.shutdown_grace, async {
+        while conns.join_next().await.is_some() {}
+    })
+    .await
+    .is_ok();
+    info!(drained, "ohmcpd shut down");
+    Ok(())
+}
+
+/// 向超出连接上限的客户端发送 -32005 错误帧后关闭连接。
+async fn reject_busy(stream: UnixStream) {
+    let err = ErrorBody {
+        code: -32005,
+        message: "server busy: connection limit reached".into(),
+        data: None,
+    };
+    if let Ok(body) = serde_json::to_vec(&err) {
+        let mut w = FrameWriter::new(stream);
+        let _ = w
+            .send(&Frame::new(MsgType::Error, 0, Bytes::from(body)))
+            .await;
     }
 }
 
 /// 走共享内存通道的最小 payload（小于此值帧内传输更划算）。
 const SHM_THRESHOLD: usize = 16 * 1024;
 
-async fn handle_conn(stream: UnixStream, shared: Arc<Shared>) -> Result<()> {
+async fn handle_conn(
+    stream: UnixStream,
+    shared: Arc<Shared>,
+    mut shutdown_rx: watch::Receiver<bool>,
+    _permit: OwnedSemaphorePermit,
+) -> Result<()> {
     let raw_fd = stream.as_raw_fd();
     let (rh, wh) = stream.into_split();
     let mut reader = FrameReader::new(rh);
@@ -78,11 +166,17 @@ async fn handle_conn(stream: UnixStream, shared: Arc<Shared>) -> Result<()> {
     // 会话级共享内存大 payload 通道（客户端显式协商后启用）。
     let mut shm: Option<Arc<ShmRing>> = None;
 
-    while let Some(frame) = reader
-        .next_frame()
-        .await
-        .map_err(|e| anyhow::anyhow!("{e}"))?
-    {
+    loop {
+        let frame = tokio::select! {
+            r = reader.next_frame() => match r.map_err(|e| anyhow::anyhow!("{e}"))? {
+                Some(f) => f,
+                None => break,
+            },
+            _ = shutdown_rx.changed() => {
+                info!(agent = %agent_id, "closing session for shutdown");
+                break;
+            }
+        };
         let id = frame.header.request_id;
         match frame.header.msg_type {
             MsgType::Auth => {

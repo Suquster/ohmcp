@@ -97,6 +97,79 @@ async fn cacheable_repeat_hits_client_cache() {
 }
 
 #[tokio::test]
+async fn connection_limit_rejects_excess_clients() {
+    let sock = sock_path("connlimit");
+    let _ = std::fs::remove_file(&sock);
+    let cfg = ohmcpd::server::ServerConfig {
+        max_connections: 2,
+        ..Default::default()
+    };
+    let s = sock.clone();
+    tokio::spawn(async move {
+        ohmcpd::server::run_with(
+            &s,
+            None,
+            ohmcpd::tools::builtin_registry(),
+            cfg,
+            std::future::pending::<()>(),
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let c1 = OhmcpClient::connect(&sock, "a1", None).await.unwrap();
+    let c2 = OhmcpClient::connect(&sock, "a2", None).await.unwrap();
+    // 第三个连接超出上限：握手必须失败（收到 -32005 busy 或连接被关闭）。
+    let r3 = OhmcpClient::connect(&sock, "a3", None).await;
+    assert!(r3.is_err(), "third connection must be rejected");
+    // 既有会话不受影响。
+    c1.ping().await.unwrap();
+    c2.ping().await.unwrap();
+    // 释放一个槽位后可再次接入。
+    drop(c1);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let c4 = OhmcpClient::connect(&sock, "a4", None).await.unwrap();
+    c4.ping().await.unwrap();
+}
+
+#[tokio::test]
+async fn graceful_shutdown_drains_and_removes_socket() {
+    let sock = sock_path("shutdown");
+    let _ = std::fs::remove_file(&sock);
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let s = sock.clone();
+    let server = tokio::spawn(async move {
+        ohmcpd::server::run_with(
+            &s,
+            None,
+            ohmcpd::tools::builtin_registry(),
+            ohmcpd::server::ServerConfig::default(),
+            async {
+                let _ = rx.await;
+            },
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    let c = OhmcpClient::connect(&sock, "agent", None).await.unwrap();
+    c.ping().await.unwrap();
+
+    tx.send(()).unwrap();
+    let r = tokio::time::timeout(std::time::Duration::from_secs(10), server)
+        .await
+        .expect("server must stop within grace period")
+        .unwrap();
+    assert!(r.is_ok(), "graceful shutdown returns Ok: {r:?}");
+    assert!(
+        !std::path::Path::new(&sock).exists(),
+        "socket file must be removed on shutdown"
+    );
+    // 停机后无法再建立新连接。
+    assert!(OhmcpClient::connect(&sock, "late", None).await.is_err());
+}
+
+#[tokio::test]
 async fn list_tools_and_ping() {
     let sock = sock_path("list");
     spawn_server(&sock, None).await;
