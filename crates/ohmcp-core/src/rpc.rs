@@ -26,6 +26,7 @@ pub fn jsonrpc_to_frame(v: &Value) -> Result<Frame> {
         "resources/read" => (MsgType::ReadResource, params),
         "prompts/list" => (MsgType::ListPrompts, params),
         "prompts/get" => (MsgType::GetPrompt, params),
+        "notifications/cancelled" => (MsgType::Cancel, params),
         "ping" => (MsgType::Ping, Value::Null),
         other => return Err(CoreError::Codec(format!("unsupported method {other}"))),
     };
@@ -47,6 +48,9 @@ pub fn frame_to_jsonrpc(frame: &Frame) -> Result<Value> {
     };
     Ok(match frame.header.msg_type {
         MsgType::Error => json!({"jsonrpc": "2.0", "id": id, "error": body}),
+        MsgType::Progress => {
+            json!({"jsonrpc": "2.0", "method": "notifications/progress", "params": body})
+        }
         MsgType::Pong => json!({"jsonrpc": "2.0", "id": id, "result": {}}),
         _ => json!({"jsonrpc": "2.0", "id": id, "result": body}),
     })

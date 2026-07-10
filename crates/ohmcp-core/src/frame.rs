@@ -80,6 +80,10 @@ pub enum MsgType {
     ListPromptsResult = 0x12,
     GetPrompt = 0x13,
     GetPromptResult = 0x14,
+    /// 取消通知（客户端 → 服务端，无响应）。
+    Cancel = 0x15,
+    /// 进度通知（服务端 → 客户端，无响应）。
+    Progress = 0x16,
     Error = 0x7F,
 }
 
@@ -106,6 +110,8 @@ impl MsgType {
             0x12 => MsgType::ListPromptsResult,
             0x13 => MsgType::GetPrompt,
             0x14 => MsgType::GetPromptResult,
+            0x15 => MsgType::Cancel,
+            0x16 => MsgType::Progress,
             0x7F => MsgType::Error,
             other => return Err(CoreError::Codec(format!("unknown msg type {other:#x}"))),
         })

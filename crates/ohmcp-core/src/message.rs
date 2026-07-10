@@ -49,6 +49,30 @@ pub struct CallToolParams {
     pub name: String,
     #[serde(default)]
     pub arguments: Value,
+    /// 元信息（如 `{"progress": true}` 请求进度通知）。
+    #[serde(rename = "_meta", default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<Value>,
+}
+
+/// 取消通知（客户端 → 服务端，无响应）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CancelParams {
+    #[serde(rename = "requestId")]
+    pub request_id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// 进度通知（服务端 → 客户端，无响应）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProgressParams {
+    #[serde(rename = "requestId")]
+    pub request_id: u64,
+    pub progress: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

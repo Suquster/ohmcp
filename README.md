@@ -86,7 +86,7 @@ let result = c.call_tool("kb.search", serde_json::json!({"query": "鸿蒙", "top
 ## 测试
 
 ```bash
-cargo test --workspace                     # 42 单元 + 12 端到端集成测试，54 项全绿
+cargo test --workspace                     # 42 单元 + 14 端到端集成测试，56 项全绿
 cargo clippy --workspace --all-targets -- -D warnings   # 零警告（CI 强制）
 ```
 

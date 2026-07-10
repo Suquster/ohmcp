@@ -28,6 +28,9 @@ use tokio::sync::{oneshot, Mutex};
 
 use pipeline::PayloadPipeline;
 
+/// 进度通知回调。
+type ProgressCallback = Box<dyn Fn(ohmcp_core::ProgressParams) + Send + Sync>;
+
 /// 多路复用 MCP 客户端连接。
 ///
 /// 响应分发采用“机会主义内联读”（connection combiner）：
@@ -41,6 +44,8 @@ pub struct OhmcpClient {
     pipeline: PayloadPipeline,
     /// 共享内存大 payload 通道（connect_shm 协商成功后启用）。
     shm: Option<ShmRing>,
+    /// 按请求 id 登记的进度回调（服务端 Progress 通知分发）。
+    progress: std::sync::Mutex<HashMap<u64, ProgressCallback>>,
 }
 
 impl OhmcpClient {
@@ -147,6 +152,7 @@ impl OhmcpClient {
             next_id: AtomicU64::new(1),
             pipeline,
             shm,
+            progress: std::sync::Mutex::new(HashMap::new()),
         });
 
         // initialize 握手。
@@ -175,6 +181,16 @@ impl OhmcpClient {
         cache_key: Option<CacheKey>,
     ) -> Result<Bytes> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.request_with_id(msg_type, payload, cache_key, id).await
+    }
+
+    async fn request_with_id(
+        &self,
+        msg_type: MsgType,
+        payload: Bytes,
+        cache_key: Option<CacheKey>,
+        id: u64,
+    ) -> Result<Bytes> {
         let (frame, _) = self.pipeline.wrap(msg_type, id, payload);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id, tx);
@@ -221,6 +237,52 @@ impl OhmcpClient {
             .request_with_cache(MsgType::CallTool, Bytes::from(payload), Some(key))
             .await?;
         Ok(serde_json::from_slice(&body)?)
+    }
+
+    /// 带进度通知的工具调用：服务端执行期间的 Progress 通知
+    /// 逐条回调 `on_progress`，完成后返回最终结果。
+    pub async fn call_tool_with_progress(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+        on_progress: impl Fn(ohmcp_core::ProgressParams) + Send + Sync + 'static,
+    ) -> Result<CallToolResult> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "name": name,
+            "arguments": arguments,
+            "_meta": {"progress": true},
+        }))?;
+        self.progress
+            .lock()
+            .unwrap()
+            .insert(id, Box::new(on_progress));
+        let r = self
+            .request_with_id(MsgType::CallTool, Bytes::from(payload), None, id)
+            .await;
+        self.progress.lock().unwrap().remove(&id);
+        Ok(serde_json::from_slice(&r?)?)
+    }
+
+    /// 发送取消通知（尽力而为；若服务端尚未处理到该请求则跳过执行
+    /// 并回 -32800，已完成则忽略）。
+    pub async fn cancel(&self, request_id: u64, reason: Option<&str>) -> Result<()> {
+        let params = ohmcp_core::CancelParams {
+            request_id,
+            reason: reason.map(str::to_string),
+        };
+        let (frame, _) = self.pipeline.wrap(
+            MsgType::Cancel,
+            request_id,
+            Bytes::from(serde_json::to_vec(&params)?),
+        );
+        self.writer
+            .lock()
+            .await
+            .send(&frame)
+            .await
+            .map_err(|e| anyhow!("{e}"))?;
+        Ok(())
     }
 
     pub async fn list_resources(&self) -> Result<ohmcp_core::ListResourcesResult> {
@@ -304,6 +366,20 @@ impl OhmcpClient {
                             .map_err(|e| anyhow!("{e}"))?
                             .ok_or_else(|| anyhow!("connection closed"))?;
                         let frame = self.resolve_shm(frame)?;
+                        // 进度通知不是响应：分发给登记的回调后继续读。
+                        if frame.header.msg_type == MsgType::Progress {
+                            if let Ok(body) = self.pipeline.unwrap(&frame) {
+                                if let Ok(p) =
+                                    serde_json::from_slice::<ohmcp_core::ProgressParams>(&body)
+                                {
+                                    let cbs = self.progress.lock().unwrap();
+                                    if let Some(cb) = cbs.get(&p.request_id) {
+                                        cb(p);
+                                    }
+                                }
+                            }
+                            continue;
+                        }
                         if frame.header.request_id == id {
                             self.pending.lock().unwrap().remove(&id);
                             return Ok(frame);

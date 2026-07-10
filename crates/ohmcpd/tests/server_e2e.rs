@@ -97,6 +97,67 @@ async fn cacheable_repeat_hits_client_cache() {
 }
 
 #[tokio::test]
+async fn progress_notifications_delivered_before_result() {
+    let sock = sock_path("progress");
+    spawn_server(&sock, None).await;
+
+    let c = OhmcpClient::connect(&sock, "agent", None).await.unwrap();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let seen2 = seen.clone();
+    let r = c
+        .call_tool_with_progress("echo", json!({"msg": "hi"}), move |p| {
+            seen2.lock().unwrap().push(p);
+        })
+        .await
+        .unwrap();
+    assert!(!r.is_error);
+    let seen = seen.lock().unwrap();
+    assert!(
+        !seen.is_empty(),
+        "must receive at least one progress update"
+    );
+    assert_eq!(seen[0].progress, 0);
+    assert_eq!(seen[0].total, Some(1));
+}
+
+#[tokio::test]
+async fn cancelled_request_is_skipped_and_session_survives() {
+    use bytes::Bytes;
+    use ohmcp_core::{Frame, MsgType};
+    use ohmcp_transport::{FrameReader, FrameWriter};
+
+    let sock = sock_path("cancel");
+    spawn_server(&sock, None).await;
+
+    // 原始帧客户端：先发 id=7 的取消通知，再发同 id 的 CallTool，
+    // 服务端应跳过执行并回 -32800；随后 id=8 正常执行，会话存活。
+    let stream = tokio::net::UnixStream::connect(&sock).await.unwrap();
+    let (rh, wh) = stream.into_split();
+    let mut r = FrameReader::new(rh);
+    let mut w = FrameWriter::new(wh);
+
+    let cancel = serde_json::to_vec(&json!({"requestId": 7})).unwrap();
+    w.send(&Frame::new(MsgType::Cancel, 7, Bytes::from(cancel)))
+        .await
+        .unwrap();
+    let call = serde_json::to_vec(&json!({"name": "echo", "arguments": {"msg": "x"}})).unwrap();
+    w.send(&Frame::new(MsgType::CallTool, 7, Bytes::from(call.clone())))
+        .await
+        .unwrap();
+    let resp = r.next_frame().await.unwrap().unwrap();
+    assert_eq!(resp.header.request_id, 7);
+    assert_eq!(resp.header.msg_type, MsgType::Error);
+    assert!(String::from_utf8_lossy(&resp.payload).contains("-32800"));
+
+    w.send(&Frame::new(MsgType::CallTool, 8, Bytes::from(call)))
+        .await
+        .unwrap();
+    let resp = r.next_frame().await.unwrap().unwrap();
+    assert_eq!(resp.header.request_id, 8);
+    assert_eq!(resp.header.msg_type, MsgType::CallToolResult);
+}
+
+#[tokio::test]
 async fn resources_and_prompts_roundtrip() {
     let sock = sock_path("resprompt");
     spawn_server(&sock, None).await;

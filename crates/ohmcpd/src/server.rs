@@ -165,6 +165,8 @@ async fn handle_conn(
     let mut delivered: HashSet<CacheKey> = HashSet::new();
     // 会话级共享内存大 payload 通道（客户端显式协商后启用）。
     let mut shm: Option<Arc<ShmRing>> = None;
+    // 已收到取消通知但尚未处理到的请求 id（尽力而为取消语义）。
+    let mut cancelled: HashSet<u64> = HashSet::new();
 
     loop {
         let frame = tokio::select! {
@@ -432,11 +434,58 @@ async fn handle_conn(
                     .await
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
             }
+            MsgType::Cancel => {
+                // 取消为通知，无响应；登记后在处理到该请求时跳过执行。
+                let body = pipeline
+                    .unwrap(&frame)
+                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                if let Ok(params) = serde_json::from_slice::<ohmcp_core::CancelParams>(&body) {
+                    cancelled.insert(params.request_id);
+                }
+            }
             MsgType::CallTool => {
+                if cancelled.remove(&id) {
+                    let err = ErrorBody {
+                        code: -32800,
+                        message: "request cancelled".into(),
+                        data: None,
+                    };
+                    let (f, _) =
+                        pipeline.wrap(MsgType::Error, id, Bytes::from(serde_json::to_vec(&err)?));
+                    writer
+                        .lock()
+                        .await
+                        .send(&f)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                    continue;
+                }
                 let body = pipeline
                     .unwrap(&frame)
                     .map_err(|e| anyhow::anyhow!("{e}"))?;
                 let params: CallToolParams = serde_json::from_slice(&body)?;
+                let wants_progress = params
+                    .meta
+                    .as_ref()
+                    .and_then(|m| m.get("progress"))
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                if wants_progress {
+                    let p = ohmcp_core::ProgressParams {
+                        request_id: id,
+                        progress: 0,
+                        total: Some(1),
+                        message: Some(format!("executing {}", params.name)),
+                    };
+                    let (f, _) =
+                        pipeline.wrap(MsgType::Progress, id, Bytes::from(serde_json::to_vec(&p)?));
+                    writer
+                        .lock()
+                        .await
+                        .send(&f)
+                        .await
+                        .map_err(|e| anyhow::anyhow!("{e}"))?;
+                }
                 if shared
                     .acl
                     .lock()
