@@ -106,7 +106,7 @@ async fn forward_secret_session_encrypts_and_works() {
     let c = OhmcpClient::connect(&sock, "agent", Some(b"fs-token"))
         .await
         .unwrap();
-    let r = c.call_tool("echo", json!({"text": "pfs"})).await.unwrap();
+    let r = c.call_tool("echo", json!({"msg": "pfs"})).await.unwrap();
     assert!(serde_json::to_string(&r).unwrap().contains("pfs"));
     c.ping().await.unwrap();
 }
